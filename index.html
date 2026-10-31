@@ -186,7 +186,7 @@
       siteContent: { ...DEFAULT_SITE_CONTENT },
 
       // Modals
-      activeModal: null, // 'addProduct', 'editProduct', 'addCategory', 'editCategory', 'addCoupon', 'addBanner', 'orderInvoice', 'manualOrder'
+      activeModal: null, // 'addProduct', 'editProduct', 'addCategory', 'addCoupon', 'addBanner', 'orderInvoice'
       selectedOrder: null,
       selectedItem: null,
 
@@ -198,12 +198,6 @@
       orderStatusFilter: "all",
       couponSearch: "",
 
-      // Live Simulator States
-      simCouponCode: "TAJ10",
-      simOrderAmount: 1000,
-      simDeliveryZone: "narayanganj",
-      simDeliveryOrderAmount: 800,
-      
       // Temporary form previews
       imagePreview: "",
       logoPreview: ""
@@ -276,6 +270,213 @@
       });
     };
 
+    // Normalize Image URL helper (auto-prefix protocol if missing)
+    window.normalizeImageUrl = function(raw) {
+      if (!raw) return "";
+      let url = String(raw).trim();
+      if (!url) return "";
+      if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("data:") && !url.startsWith("blob:")) {
+        url = "https://" + url;
+      }
+      return url;
+    };
+
+    // Robust Firestore Date Parser
+    window.parseFirestoreDate = function(val) {
+      if (!val) return new Date().toISOString();
+      if (typeof val?.toDate === 'function') {
+        try {
+          const d = val.toDate();
+          if (!isNaN(d.getTime())) return d.toISOString();
+        } catch {}
+      }
+      if (typeof val === 'object' && typeof val.seconds === 'number') {
+        const d = new Date(val.seconds * 1000 + (val.nanoseconds ? Math.round(val.nanoseconds / 1000000) : 0));
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+      if (val instanceof Date) {
+        if (!isNaN(val.getTime())) return val.toISOString();
+      }
+      if (typeof val === 'number') {
+        const d = val < 10000000000 ? new Date(val * 1000) : new Date(val);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (/^\d+$/.test(trimmed)) {
+          const num = Number(trimmed);
+          const d = num < 10000000000 ? new Date(num * 1000) : new Date(num);
+          if (!isNaN(d.getTime())) return d.toISOString();
+        }
+        const d = new Date(trimmed);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+      return new Date().toISOString();
+    };
+
+    // Format Date into Bengali string safely
+    window.formatOrderDate = function(val) {
+      try {
+        const iso = window.parseFirestoreDate(val);
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return 'সম্প্রতি';
+        return d.toLocaleDateString('bn-BD', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      } catch {
+        return 'সম্প্রতি';
+      }
+    };
+
+    // Normalize any order schema from customer applications
+    window.normalizeOrder = function(raw, docId) {
+      if (!raw || typeof raw !== 'object') {
+        return {
+          id: docId || 'unknown',
+          orderNumber: docId ? '#' + docId.slice(0, 8) : '#অর্ডার',
+          customerName: 'সম্মানিত গ্রাহক',
+          customerPhone: 'তথ্য নেই',
+          customerAddress: 'ঠিকানা উল্লেখ নেই',
+          customerDistrict: 'নারায়ণগঞ্জ',
+          deliveryZone: 'narayanganj',
+          items: [],
+          subtotal: 0,
+          deliveryFee: 0,
+          totalAmount: 0,
+          paymentMethod: 'cod',
+          paymentStatus: 'unpaid',
+          orderStatus: 'Pending',
+          createdAt: new Date().toISOString()
+        };
+      }
+
+      const id = String(docId || raw.id || raw.orderId || raw.orderNumber || raw.orderCode || 'TC-' + Date.now().toString().slice(-6));
+      const orderNumber = String(raw.orderNumber || raw.orderCode || raw.orderId || (raw.id ? (raw.id.startsWith('#') ? raw.id : '#' + raw.id.slice(0, 8)) : '#' + id.slice(0, 8)));
+
+      const customerName = String(
+        raw.customerName ||
+        raw.customer?.name ||
+        raw.name ||
+        raw.shippingAddress?.name ||
+        raw.deliveryAddress?.name ||
+        raw.user?.name ||
+        raw.userName ||
+        'সম্মানিত গ্রাহক'
+      ).trim();
+
+      const customerPhone = String(
+        raw.customerPhone ||
+        raw.customer?.phone ||
+        raw.phone ||
+        raw.mobile ||
+        raw.phoneNumber ||
+        raw.contactNumber ||
+        raw.shippingAddress?.phone ||
+        raw.deliveryAddress?.phone ||
+        raw.user?.phone ||
+        'ফোন নম্বর নেই'
+      ).trim();
+
+      const customerAddress = String(
+        raw.customerAddress ||
+        raw.customer?.address ||
+        raw.address ||
+        raw.shippingAddress?.address ||
+        raw.shippingAddress?.fullAddress ||
+        raw.deliveryAddress?.address ||
+        raw.deliveryAddress ||
+        raw.fullAddress ||
+        'ঠিকানা উল্লেখ নেই'
+      ).trim();
+
+      const rawDistrict = String(
+        raw.customerDistrict ||
+        raw.district ||
+        raw.customer?.district ||
+        raw.shippingAddress?.district ||
+        raw.city ||
+        raw.shippingAddress?.city ||
+        ''
+      ).trim();
+
+      const isNarayanganj =
+        raw.deliveryZone === 'narayanganj' ||
+        /নারায়ণগঞ্জ|narayanganj|chashara|চাষাড়া|সিদ্ধিরগঞ্জ|siddhirganj/i.test(rawDistrict) ||
+        /নারায়ণগঞ্জ|narayanganj/i.test(customerAddress);
+
+      const customerDistrict = rawDistrict || (isNarayanganj ? 'নারায়ণগঞ্জ' : 'অন্যান্য জেলা');
+      const deliveryZone = raw.deliveryZone || (isNarayanganj ? 'narayanganj' : 'outside_narayanganj');
+
+      const rawItems = 
+        raw.items ||
+        raw.products ||
+        raw.cartItems ||
+        raw.cart ||
+        raw.orderItems ||
+        raw.lineItems ||
+        [];
+
+      const items = Array.isArray(rawItems)
+        ? rawItems.map((it, idx) => ({
+            productId: it.productId || it.id || it.product?.id,
+            productName: String(it.productName || it.name || it.title || it.productTitle || it.product?.name || `পণ্য #${idx + 1}`).trim(),
+            quantity: Number(it.quantity || it.qty || it.count || 1) || 1,
+            unitPrice: Number(it.unitPrice || it.price || it.productPrice || it.amount || 0) || 0,
+            specialFee: Number(it.specialFee || it.specialDeliveryFee || 0) || 0,
+            imageUrl: it.imageUrl || it.image || it.product?.imageUrl || it.product?.image
+          }))
+        : [];
+
+      const deliveryFee = Number(raw.deliveryFee ?? raw.shippingFee ?? raw.deliveryCharge ?? (isNarayanganj ? 60 : 120)) || 0;
+
+      let subtotal = Number(raw.subtotal ?? raw.subTotal ?? raw.itemsTotal);
+      if (isNaN(subtotal) || subtotal <= 0) {
+        subtotal = items.reduce((acc, it) => acc + (it.unitPrice * it.quantity), 0);
+      }
+
+      let totalAmount = Number(raw.totalAmount ?? raw.total ?? raw.grandTotal ?? raw.totalPrice);
+      if (isNaN(totalAmount) || totalAmount <= 0) {
+        totalAmount = subtotal + deliveryFee;
+      }
+
+      const rawStatus = String(raw.orderStatus || raw.status || 'Pending').trim().toLowerCase();
+      let orderStatus = 'Pending';
+      if (rawStatus === 'processing' || rawStatus === 'প্রসেসিং') orderStatus = 'Processing';
+      else if (rawStatus === 'delivered' || rawStatus === 'ডেলিভার্ড' || rawStatus === 'completed') orderStatus = 'Delivered';
+      else if (rawStatus === 'cancelled' || rawStatus === 'বাতিল') orderStatus = 'Cancelled';
+      else orderStatus = 'Pending';
+
+      const paymentMethod = String(raw.paymentMethod || raw.payment?.method || 'cod').toLowerCase();
+      const rawPaymentStatus = String(raw.paymentStatus || raw.payment?.status || 'unpaid').toLowerCase();
+      const paymentStatus = (rawPaymentStatus === 'paid' || rawPaymentStatus === 'পরিশোধিত') ? 'paid' : 'unpaid';
+
+      const createdAt = window.parseFirestoreDate(raw.createdAt || raw.orderDate || raw.date || raw.timestamp || raw.created_at);
+
+      return {
+        ...raw,
+        id,
+        orderNumber,
+        customerName,
+        customerPhone,
+        customerAddress,
+        customerDistrict,
+        deliveryZone,
+        items,
+        subtotal,
+        deliveryFee,
+        totalAmount,
+        paymentMethod,
+        paymentStatus,
+        orderStatus,
+        orderNote: raw.orderNote || raw.note || raw.customerNote || raw.instructions || '',
+        createdAt
+      };
+    };
+
     // -------------------------------------------------------------
     // 5. AUTHENTICATION LOGIC
     // -------------------------------------------------------------
@@ -339,7 +540,7 @@
 
       // Orders
       onSnapshot(collection(db, "orders"), (snap) => {
-        const ords = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const ords = snap.docs.map(d => window.normalizeOrder(d.data(), d.id));
         ords.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
         state.orders = ords;
         renderApp();
@@ -417,11 +618,27 @@
       e.preventDefault();
       const form = e.target;
       const fileInput = form.elements['product-image-file'];
-      let imageUrl = form.elements['product-image-url']?.value || "";
+      const rawTextUrl = form.elements['product-image-url']?.value || "";
+      let imageUrl = window.normalizeImageUrl(rawTextUrl);
 
+      // If a local image file was chosen from device/gallery, compress & encode to Base64
       if (fileInput?.files?.[0]) {
-        showToast("ছবি প্রসেস হচ্ছে...", "info");
-        imageUrl = await window.compressImageToBase64(fileInput.files[0], 800, 0.85);
+        try {
+          showToast("গ্যালারি থেকে ছবি প্রসেস হচ্ছে...", "info");
+          imageUrl = await window.compressImageToBase64(fileInput.files[0], 800, 0.85);
+        } catch (imgErr) {
+          console.warn("Image file error:", imgErr);
+        }
+      }
+
+      // If neither a new file was chosen nor a new text URL was entered, retain previous image when editing
+      if (!imageUrl && state.selectedItem?.imageUrl) {
+        imageUrl = state.selectedItem.imageUrl;
+      }
+
+      // Fallback default image placeholder if still empty
+      if (!imageUrl) {
+        imageUrl = "https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80";
       }
 
       const payload = {
@@ -432,7 +649,7 @@
         regularPrice: form.elements['product-regular-price'].value ? Number(form.elements['product-regular-price'].value) : null,
         stockStatus: form.elements['product-stock'].value,
         specialDeliveryFee: Number(form.elements['product-special-fee'].value) || 0,
-        imageUrl: imageUrl || "https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80",
+        imageUrl: imageUrl,
         sku: form.elements['product-sku']?.value.trim() || `TC-${Date.now().toString().slice(-5)}`,
         updatedAt: new Date().toISOString()
       };
@@ -500,12 +717,9 @@
       const code = form.elements['coupon-code'].value.trim().toUpperCase().replace(/\s+/g, '');
       const type = form.elements['coupon-type'].value;
       const amount = Number(form.elements['coupon-amount'].value);
-      const minOrder = Number(form.elements['coupon-min-order'].value) || 0;
+      const minOrder = form.elements['coupon-min'].value ? Number(form.elements['coupon-min'].value) : 0;
 
-      if (!code || isNaN(amount) || amount <= 0) {
-        showToast("সঠিক কোড ও ডিসকাউন্টের পরিমাণ দিন", "error");
-        return;
-      }
+      if (!code || !amount) return showToast("কোড ও ডিসকাউন্ট সঠিক দিন", "error");
 
       const payload = {
         code,
@@ -513,13 +727,23 @@
         discountAmount: amount,
         minOrderAmount: minOrder,
         isActive: true,
-        updatedAt: new Date().toISOString()
+        usageCount: 0,
+        createdAt: new Date().toISOString()
       };
 
       try {
-        await addDoc(collection(db, "coupons"), { ...payload, createdAt: new Date().toISOString() });
-        showToast(`কুপন '${code}' সফলভাবে যুক্ত হয়েছে!`, "success");
+        await addDoc(collection(db, "coupons"), payload);
+        showToast(`কুপন '${code}' সফলভাবে সংরক্ষিত হয়েছে!`, "success");
         closeModal();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+
+    window.handleToggleCoupon = async function(id, currentActive) {
+      try {
+        await updateDoc(doc(db, "coupons", id), { isActive: !currentActive });
+        showToast(`কুপন ${!currentActive ? 'সক্রিয়' : 'নিষ্ক্রিয়'} করা হয়েছে`, "success");
       } catch (e) {
         showToast(e.message, "error");
       }
@@ -538,8 +762,18 @@
     // Update Order Status
     window.handleUpdateOrderStatus = async function(orderId, newStatus) {
       try {
-        await updateDoc(doc(db, "orders", orderId), { status: newStatus, updatedAt: new Date().toISOString() });
-        showToast("অর্ডার স্ট্যাটাস আপডেট হয়েছে", "success");
+        await updateDoc(doc(db, "orders", orderId), { orderStatus: newStatus, updatedAt: new Date().toISOString() });
+        showToast(`অর্ডার স্ট্যাটাস '${newStatus}' করা হয়েছে`, "success");
+      } catch (e) {
+        showToast(e.message, "error");
+      }
+    };
+
+    window.handleToggleOrderPayment = async function(orderId, currentStatus) {
+      const newStatus = currentStatus === "paid" ? "unpaid" : "paid";
+      try {
+        await updateDoc(doc(db, "orders", orderId), { paymentStatus: newStatus });
+        showToast(`পেমেন্ট ${newStatus === 'paid' ? 'পরিশোধিত' : 'বাকি'} করা হয়েছে`, "success");
       } catch (e) {
         showToast(e.message, "error");
       }
@@ -550,52 +784,52 @@
       e.preventDefault();
       const form = e.target;
       const payload = {
-        narayanganjFee: Number(form.elements['narayanganj-fee'].value) || 0,
-        outsideNarayanganjFee: Number(form.elements['outside-fee'].value) || 0,
-        freeDeliveryThreshold: Number(form.elements['free-threshold'].value) || 0,
-        deliveryNotes: form.elements['delivery-notes'].value.trim(),
-        codAvailable: form.elements['cod-available'].checked,
+        narayanganjFee: Number(form.elements['fee-narayanganj'].value),
+        outsideNarayanganjFee: Number(form.elements['fee-outside'].value),
+        freeDeliveryThreshold: Number(form.elements['fee-free-threshold'].value),
+        deliveryNotes: form.elements['fee-notes'].value.trim(),
+        codAvailable: form.elements['fee-cod'].checked,
         updatedAt: new Date().toISOString()
       };
 
       try {
         await setDoc(doc(db, "settings", "delivery_settings"), payload, { merge: true });
-        showToast("ডেলিভারি ফি সেটিংস সংরক্ষিত হয়েছে!", "success");
+        showToast("নারায়ণগঞ্জ ও অন্যান্য এলাকার ডেলিভারি ফি সংরক্ষিত হয়েছে!", "success");
       } catch (err) {
         showToast(err.message, "error");
       }
     };
 
-    // Save Shop Info
+    // Save Shop Info & Logo
     window.handleSaveShopInfo = async function(e) {
       e.preventDefault();
       const form = e.target;
-      const logoFile = form.elements['shop-logo-file'];
+      const logoFileInput = form.elements['shop-logo-file'];
       let logoUrl = form.elements['shop-logo-url']?.value || state.shopInfo.logoUrl || "";
 
-      if (logoFile?.files?.[0]) {
-        showToast("লোগো প্রসেস হচ্ছে...", "info");
-        logoUrl = await window.compressImageToBase64(logoFile.files[0], 400, 0.9);
+      if (logoFileInput?.files?.[0]) {
+        showToast("লোগো প্রসেস ও Base64 কনভার্ট হচ্ছে...", "info");
+        logoUrl = await window.compressImageToBase64(logoFileInput.files[0], 400, 0.88);
       }
 
       const payload = {
-        storeName: form.elements['store-name'].value.trim(),
-        tagline: form.elements['store-tagline'].value.trim(),
-        phone: form.elements['store-phone'].value.trim(),
-        whatsapp: form.elements['store-whatsapp'].value.trim(),
-        email: form.elements['store-email'].value.trim(),
-        address: form.elements['store-address'].value.trim(),
-        facebookPage: form.elements['store-fb'].value.trim(),
-        instagram: form.elements['store-insta'].value.trim(),
+        storeName: form.elements['shop-name'].value.trim(),
         logoUrl: logoUrl,
+        tagline: form.elements['shop-tagline'].value.trim(),
+        phone: form.elements['shop-phone'].value.trim(),
+        whatsapp: form.elements['shop-whatsapp'].value.trim(),
+        email: form.elements['shop-email'].value.trim(),
+        address: form.elements['shop-address'].value.trim(),
+        facebookPage: form.elements['shop-fb'].value.trim(),
+        instagram: form.elements['shop-insta'].value.trim(),
         updatedAt: new Date().toISOString()
       };
 
       try {
         await setDoc(doc(db, "settings", "shop_info"), payload, { merge: true });
-        showToast("দোকানের তথ্য সফলভাবে সেভ হয়েছে!", "success");
-      } catch (e) {
-        showToast(e.message, "error");
+        showToast("শপ তথ্য ও লোগো সফলভাবে সংরক্ষিত হয়েছে!", "success");
+      } catch (err) {
+        showToast(err.message, "error");
       }
     };
 
@@ -603,1162 +837,955 @@
     window.handleSaveSiteContent = async function(e) {
       e.preventDefault();
       const form = e.target;
-
+      
       const payload = {
-        topBarAnnouncement: form.elements['top-bar-text'].value.trim(),
-        supportPhone: form.elements['support-phone'].value.trim(),
-        isTopBarActive: form.elements['top-bar-active'].checked,
-        whyUsTitle: form.elements['why-us-title'].value.trim(),
-        whyUsDescription: form.elements['why-us-desc'].value.trim(),
-        footerTagline: form.elements['footer-tagline'].value.trim(),
-        shopBio: form.elements['shop-bio'].value.trim(),
-        copyrightText: form.elements['copyright-text'].value.trim(),
+        topBarAnnouncement: form.elements['site-topbar-text'].value.trim(),
+        supportPhone: form.elements['site-support-phone'].value.trim(),
+        isTopBarActive: form.elements['site-topbar-active'].checked,
+        whyUsTitle: form.elements['site-why-title'].value.trim(),
+        whyUsDescription: form.elements['site-why-desc'].value.trim(),
+        footerTagline: form.elements['site-footer-tagline'].value.trim(),
+        shopBio: form.elements['site-shop-bio'].value.trim(),
+        copyrightText: form.elements['site-copyright'].value.trim(),
+        featureBadges: state.siteContent.featureBadges,
+        whyUsSteps: state.siteContent.whyUsSteps,
         updatedAt: new Date().toISOString()
       };
 
       try {
         await setDoc(doc(db, "settings", "site_content"), payload, { merge: true });
-        showToast("সাইট কনটেন্ট ও ফিচার সেটিংস সংরক্ষিত হয়েছে!", "success");
+        showToast("সাইট কনটেন্ট ও ফিচারসমূহ সফলভাবে সেভ হয়েছে!", "success");
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+
+    // Save Banner
+    window.handleSaveBanner = async function(e) {
+      e.preventDefault();
+      const form = e.target;
+      const fileInput = form.elements['banner-file'];
+      let imageUrl = form.elements['banner-url']?.value || "";
+
+      if (fileInput?.files?.[0]) {
+        imageUrl = await window.compressImageToBase64(fileInput.files[0], 1200, 0.85);
+      }
+
+      const payload = {
+        title: form.elements['banner-title'].value.trim(),
+        subtitle: form.elements['banner-subtitle'].value.trim(),
+        badgeText: form.elements['banner-badge'].value.trim(),
+        link: form.elements['banner-link'].value.trim(),
+        imageUrl: imageUrl || "https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=1200&q=80",
+        isActive: true,
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        await addDoc(collection(db, "banners"), payload);
+        showToast("নতুন ব্যানার যুক্ত হয়েছে!", "success");
+        closeModal();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+
+    window.handleDeleteBanner = async function(id) {
+      if (!confirm("ব্যানারটি মুছে ফেলতে চান?")) return;
+      try {
+        await deleteDoc(doc(db, "banners", id));
+        showToast("ব্যানার মুছে ফেলা হয়েছে", "info");
       } catch (e) {
         showToast(e.message, "error");
       }
     };
 
-    // Seed Sample Data
-    window.handleSeedSampleData = async function() {
-      if (!confirm("আপনি কি তাজ কেয়ার্স-এর ডেমো প্রোডাক্ট, ক্যাটাগরি, ব্যানার, কুপন এবং অর্ডার ডেটাবেসে লোড করতে চান?")) return;
+    // Seed Initial Bengali Demo Data
+    window.seedAllDemoData = async function() {
+      if (!confirm("তাজ কেয়ার্স এর জন্য খাঁটি ভেষজ পণ্য, নারায়ণগঞ্জ ডেলিভারি ফি, কুপন এবং ডেমো অর্ডার ফায়ারবেসে লোড করতে চান?")) return;
       showToast("নমুনা ডেটা লোড হচ্ছে...", "info");
 
       try {
-        // Categories
-        const catPromises = [
-          { name: "ভেষজ ও রূপচর্চা", description: "প্রাকৃতিক ভেষজ উপাদান এবং ত্বকের যত্নের খাঁটি পণ্য।" },
-          { name: "হোমমেড ফুড ও খাদ্যদ্রব্য", description: "খাঁটি সুন্দরবনের মধু, ঘি ও স্বাস্থ্যকর অর্গানিক খাবার।" },
-          { name: "চুলের যত্ন ও অর্গানিক তেল", description: "খাঁটি নারিকেল তেল, পেঁয়াজের নির্যাস ও কালোজিরা তেল।" },
-          { name: "নিত্যপ্রয়োজনীয় অর্গানিক পণ্য", description: "দৈনন্দিন স্বাস্থ্য সুরক্ষার প্রাকৃতিক পণ্যসমূহ।" }
-        ].map(c => addDoc(collection(db, "categories"), { ...c, isActive: true, createdAt: new Date().toISOString() }));
-        await Promise.all(catPromises);
-
         // Products
-        const prodPromises = [
-          {
-            name: "খাঁটি সুন্দরবনের প্রাকৃতিক মধু (৫০০ গ্রাম)",
-            description: "সুন্দরবনের গভীর অরণ্য থেকে সরাসরি সংগৃহীত ১০০% বিশুদ্ধ ও কাঁচা মধু।",
-            category: "হোমমেড ফুড ও খাদ্যদ্রব্য",
-            price: 650,
-            regularPrice: 750,
-            stockStatus: "in_stock",
-            specialDeliveryFee: 0,
-            imageUrl: "https://images.unsplash.com/photo-1587049352846-4a222e784d38?auto=format&fit=crop&w=600&q=80",
-            sku: "TC-HNY01",
-            createdAt: new Date().toISOString()
-          },
-          {
-            name: "কোল্ড প্রেসড এক্সট্রা ভার্জিন নারিকেল তেল (২৫০ মি.লি.)",
-            description: "সম্পূর্ণ প্রাকৃতিকভাবে তৈরি কাঠের ঘানিতে ভাঙা খাঁটি নারিকেল তেল।",
-            category: "চুলের যত্ন ও অর্গানিক তেল",
-            price: 380,
-            regularPrice: 420,
-            stockStatus: "in_stock",
-            specialDeliveryFee: 0,
-            imageUrl: "https://images.unsplash.com/photo-1608571423902-eed4a5ad8108?auto=format&fit=crop&w=600&q=80",
-            sku: "TC-OIL02",
-            createdAt: new Date().toISOString()
-          },
-          {
-            name: "ন্যাচারাল উজ্জ্বলতা ফেস প্যাক (১০০ গ্রাম)",
-            description: "কস্তুরী হলুদ, চন্দন ও নিম পাতার ভেষজ মিশ্রণ সমৃদ্ধ প্রাকৃতিক ফেস প্যাক।",
-            category: "ভেষজ ও রূপচর্চা",
-            price: 290,
-            regularPrice: 350,
-            stockStatus: "in_stock",
-            specialDeliveryFee: 0,
-            imageUrl: "https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80",
-            sku: "TC-FPC03",
-            createdAt: new Date().toISOString()
-          },
-          {
-            name: "প্রিমিয়াম জাফরান গ্লো সিরাম (৩০ মি.লি.)",
-            description: "কাশ্মীরি জাফরান ও হায়ালুরনিক এসিড মিশ্রিত অ্যান্টি-এজিং নাইট সিরাম। কাঁচের বোতলের সুরক্ষায় বিশেষ ডেলিভারি প্রযোজ্য।",
-            category: "ভেষজ ও রূপচর্চা",
-            price: 850,
-            regularPrice: 990,
-            stockStatus: "in_stock",
-            specialDeliveryFee: 20, // Special Fee
-            imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?auto=format&fit=crop&w=600&q=80",
-            sku: "TC-SRM04",
-            createdAt: new Date().toISOString()
-          }
-        ].map(p => addDoc(collection(db, "products"), p));
-        await Promise.all(prodPromises);
+        const initialProducts = [
+          { name: "বিশুদ্ধ ভেষজ কালোজিরা তেল (২০০ মি.লি.)", description: "১০০% খাঁটি কোল্ড-প্রেসড কালোজিরা তেল। চুল পড়া রোধে ও ত্বক সুস্থ রাখতে অতুলনীয়।", category: "ভেষজ ও রূপচর্চা", price: 450, regularPrice: 550, stockStatus: "in_stock", specialDeliveryFee: 0, imageUrl: "https://images.unsplash.com/photo-1608248597359-0a25621a64f3?auto=format&fit=crop&w=600&q=80", sku: "TC-OIL-01" },
+          { name: "অর্গানিক নিম ও অ্যালোভেরা ফেসওয়াশ", description: "ব্রণ দূর করে ও ত্বককে প্রাকৃতিকভাবে উজ্জ্বল ও সতেজ রাখে।", category: "ভেষজ ও রূপচর্চা", price: 320, regularPrice: 380, stockStatus: "in_stock", specialDeliveryFee: 0, imageUrl: "https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80", sku: "TC-FW-02" },
+          { name: "খাঁটি গাওয়া ঘি (৫০০ গ্রাম)", description: "গ্রামের খামারের খাঁটি গরুর দুধের সর থেকে ঐতিহ্যবাহী নিয়মে প্রস্তুত দানাদার খাঁটি ঘি।", category: "হোমমেড ফুড", price: 850, regularPrice: 950, stockStatus: "limited_stock", specialDeliveryFee: 20, imageUrl: "https://images.unsplash.com/photo-1628088062854-d1870b4553da?auto=format&fit=crop&w=600&q=80", sku: "TC-GHEE-03" },
+          { name: "প্রাকৃতিক সুন্দরবনের মধু (১ কেজি)", description: "সুন্দরবনের খলিসা ফুলের প্রাকৃতিক মধু। কোন প্রকার কৃত্রিম চিনিমুক্ত খাঁটি স্বাদ।", category: "হোমমেড ফুড", price: 1200, regularPrice: 1400, stockStatus: "in_stock", specialDeliveryFee: 25, imageUrl: "https://images.unsplash.com/photo-1587049352846-4a222e784d38?auto=format&fit=crop&w=600&q=80", sku: "TC-HONEY-04" }
+        ];
+        for (const p of initialProducts) await addDoc(collection(db, "products"), { ...p, createdAt: new Date().toISOString() });
+
+        // Categories
+        const initialCats = ["ভেষজ ও রূপচর্চা", "পোশাক ও জামা-কাপড়", "হোমমেড ফুড", "নিত্যপ্রয়োজনীয় পণ্য"];
+        for (const c of initialCats) await addDoc(collection(db, "categories"), { name: c, description: "তাজ কেয়ার্স স্পেশাল কালেকশন", isActive: true });
 
         // Coupons
-        await addDoc(collection(db, "coupons"), {
-          code: "TAJ10",
-          discountType: "percentage",
-          discountAmount: 10,
-          minOrderAmount: 500,
-          isActive: true,
-          createdAt: new Date().toISOString()
-        });
+        await addDoc(collection(db, "coupons"), { code: "TAJ10", discountType: "percentage", discountAmount: 10, minOrderAmount: 500, isActive: true, usageCount: 24, createdAt: new Date().toISOString() });
+        await addDoc(collection(db, "coupons"), { code: "EID2026", discountType: "flat", discountAmount: 100, minOrderAmount: 800, isActive: true, usageCount: 56, createdAt: new Date().toISOString() });
 
-        await addDoc(collection(db, "coupons"), {
-          code: "EID2026",
-          discountType: "flat",
-          discountAmount: 100,
-          minOrderAmount: 1000,
-          isActive: true,
-          createdAt: new Date().toISOString()
-        });
-
-        // Test Order
+        // Orders
         await addDoc(collection(db, "orders"), {
-          orderNumber: "TC-" + Math.floor(100000 + Math.random() * 900000),
-          customerName: "মাজহারুল ইসলাম",
-          customerPhone: "01712-987654",
+          customerName: "তানভীর আহমেদ",
+          customerPhone: "01712345678",
+          customerAddress: "চাষাড়া মোড়, জামতলা, নারায়ণগঞ্জ",
+          customerDistrict: "নারায়ণগঞ্জ",
           deliveryZone: "narayanganj",
-          address: "বাসা নং ১২, রোড ৩, চাষাড়া, নারায়ণগঞ্জ",
-          district: "নারায়ণগঞ্জ",
+          items: [{ productName: "বিশুদ্ধ ভেষজ কালোজিরা তেল (২০০ মি.লি.)", quantity: 2, unitPrice: 450 }],
+          subtotal: 900,
+          deliveryFee: 60,
+          totalAmount: 960,
           paymentMethod: "cod",
           paymentStatus: "unpaid",
-          status: "pending",
-          items: [
-            { id: "1", name: "খাঁটি সুন্দরবনের প্রাকৃতিক মধু", price: 650, quantity: 1, total: 650 },
-            { id: "2", name: "ন্যাচারাল উজ্জ্বলতা ফেস প্যাক", price: 290, quantity: 1, total: 290 }
-          ],
-          subtotal: 940,
-          deliveryFee: 60,
-          totalAmount: 1000,
+          orderStatus: "Pending",
+          orderNote: "সন্ধ্যা ৬টার পর ডেলিভারি করবেন।",
           createdAt: new Date().toISOString()
         });
 
-        // Settings Docs
-        await setDoc(doc(db, "settings", "delivery_settings"), DEFAULT_DELIVERY_SETTINGS, { merge: true });
-        await setDoc(doc(db, "settings", "shop_info"), DEFAULT_SHOP_INFO, { merge: true });
-        await setDoc(doc(db, "settings", "site_content"), DEFAULT_SITE_CONTENT, { merge: true });
+        // Settings
+        await setDoc(doc(db, "settings", "delivery_settings"), DEFAULT_DELIVERY_SETTINGS);
+        await setDoc(doc(db, "settings", "shop_info"), DEFAULT_SHOP_INFO);
+        await setDoc(doc(db, "settings", "site_content"), DEFAULT_SITE_CONTENT);
 
-        showToast("নমুনা ডেটা সফলভাবে ফায়ারবেসে যুক্ত হয়েছে!", "success");
+        showToast("তাজ কেয়ার্স ডেমো ডেটা সফলভাবে ফায়ারবেসে যুক্ত হয়েছে!", "success");
       } catch (err) {
-        showToast("ডেটা লোড ত্রুটি: " + err.message, "error");
+        showToast("ত্রুটি: " + err.message, "error");
       }
     };
 
     // -------------------------------------------------------------
-    // 8. TEMPLATE RENDERING FUNCTIONS
+    // 8. TEMPLATE RENDERING (FULL BENGALI UI)
     // -------------------------------------------------------------
     function renderApp() {
       const root = document.getElementById("app");
       if (!root) return;
 
+      // 1. LOGIN SCREEN VIEW
       if (!state.isAuthenticated) {
-        root.innerHTML = renderLoginScreen();
-      } else {
-        root.innerHTML = renderDashboardLayout();
-      }
-      lucide.createIcons();
-    }
-
-    // Login Screen HTML
-    function renderLoginScreen() {
-      return `
-        <div class="min-h-screen bg-linear-to-br from-slate-900 via-slate-800 to-emerald-950 flex items-center justify-center p-4">
-          <div class="w-full max-w-md bg-white/95 backdrop-blur-md rounded-3xl p-8 sm:p-10 shadow-2xl border border-white/20 text-center relative overflow-hidden">
-            <div class="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl"></div>
-            
-            <!-- Logo / Brand -->
-            <div class="w-16 h-16 mx-auto mb-5 rounded-2xl bg-linear-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shadow-lg shadow-emerald-500/30">
-              <i data-lucide="shield-check" class="w-9 h-9"></i>
-            </div>
-            
-            <h1 class="text-2xl font-black text-slate-800 tracking-tight">Taj Cares</h1>
-            <p class="text-sm font-semibold text-emerald-600 mb-2">অফিশিয়াল অ্যাডমিন ড্যাশবোর্ড</p>
-            <p class="text-xs text-slate-500 mb-8">প্রোডাক্ট, ক্যাটাগরি, ব্যানার, ডেলিভারি ফি ও অর্ডার নিয়ন্ত্রণ প্যানেল</p>
-
-            ${state.loginError ? `
-              <div class="mb-5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2 text-left animate-shake">
-                <i data-lucide="alert-circle" class="w-4 h-4 shrink-0 text-rose-500"></i>
-                <span>${state.loginError}</span>
-              </div>
-            ` : ''}
-
-            <form onsubmit="handleLogin(event)" class="space-y-5 text-left">
-              <div>
-                <label class="block text-xs font-bold text-slate-700 mb-2">
-                  মাস্টার সিকিউরিটি পাসওয়ার্ড (Master Password)
-                </label>
-                <div class="relative">
-                  <input
-                    id="login-password"
-                    type="password"
-                    required
-                    placeholder="পাসওয়ার্ড লিখুন..."
-                    class="w-full pl-4 pr-11 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition"
-                  />
-                  <button
-                    type="button"
-                    onclick="const inp = document.getElementById('login-password'); inp.type = inp.type === 'password' ? 'text' : 'password';"
-                    class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
-                  >
-                    <i data-lucide="eye" class="w-4 h-4"></i>
-                  </button>
+        root.innerHTML = `
+          <div class="min-h-screen w-full bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-900 flex items-center justify-center p-4 sm:p-6 relative">
+            <div class="w-full max-w-md bg-slate-900/95 border border-emerald-900/50 backdrop-blur-xl shadow-2xl rounded-2xl p-6 sm:p-8 relative z-10">
+              <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-lg shadow-emerald-500/25 mb-4 ring-4 ring-emerald-500/10">
+                  <i data-lucide="shield-check" class="w-8 h-8"></i>
                 </div>
+                <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-1">
+                  Taj Cares <span class="text-emerald-400 font-semibold text-xl">(তাজ কেয়ার্স)</span>
+                </h1>
+                <p class="text-slate-400 text-sm flex items-center justify-center gap-1.5 mt-1">
+                  <i data-lucide="lock" class="w-3.5 h-3.5 text-emerald-400"></i>
+                  মাস্টার সিকিউরিটি অ্যাডমিন প্যানেল
+                </p>
               </div>
 
-              <button
-                type="submit"
-                class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-xl shadow-lg shadow-emerald-600/25 transition duration-150 flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>ড্যাশবোর্ডে প্রবেশ করুন</span>
-                <i data-lucide="arrow-right" class="w-4 h-4"></i>
-              </button>
-            </form>
+              <form onsubmit="handleLogin(event)" class="space-y-5">
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <label class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <i data-lucide="key-round" class="w-3.5 h-3.5 text-emerald-400"></i>
+                      মাস্টার পাসওয়ার্ড
+                    </label>
+                    <span class="text-[11px] text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">
+                      নিরাপদ এক্সেস
+                    </span>
+                  </div>
 
-            <div class="mt-8 pt-5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-              <span>Firebase v10 Live Sync</span>
-              <span>🔒 256-bit Secure</span>
+                  <div class="relative">
+                    <input 
+                      id="login-password" 
+                      type="password" 
+                      required 
+                      placeholder="মাস্টার পাসওয়ার্ডটি লিখুন..." 
+                      class="w-full bg-slate-950/80 border border-slate-700 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white rounded-xl px-4 py-3.5 text-base placeholder:text-slate-500 outline-none font-mono"
+                    />
+                  </div>
+
+                  ${state.loginError ? `
+                    <div class="mt-2.5 p-3 rounded-lg bg-rose-950/80 border border-rose-800 text-rose-300 text-xs flex items-center gap-2 animate-shake">
+                      <span>⚠️ ${state.loginError}</span>
+                    </div>
+                  ` : ''}
+                </div>
+
+                <button 
+                  type="submit" 
+                  class="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-500 hover:from-emerald-600 to-teal-500 text-slate-950 font-bold rounded-xl shadow-lg shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>ড্যাশবোর্ডে প্রবেশ করুন</span>
+                  <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                </button>
+              </form>
+
+              <div class="mt-8 pt-5 border-t border-slate-800 text-center text-xs text-slate-400">
+                🛡️ এই ড্যাশবোর্ডটি তাজ কেয়ার্স এর অনুমোদিত অ্যাডমিনদের জন্য সম্পূর্ণ সংরক্ষিত।
+              </div>
             </div>
           </div>
-        </div>
-      `;
-    }
+        `;
+        lucide.createIcons();
+        return;
+      }
 
-    // Dashboard Main Layout
-    function renderDashboardLayout() {
-      const pendingOrdersCount = state.orders.filter(o => o.status === 'pending').length;
-      
-      return `
-        <div class="flex h-screen overflow-hidden bg-slate-50">
-          <!-- SIDEBAR DESKTOP -->
-          <aside class="hidden lg:flex flex-col w-64 bg-slate-900 border-r border-slate-800 text-white shrink-0">
-            <div class="p-5 border-b border-slate-800 flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-linear-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-bold shadow-md">
-                  ${state.shopInfo.logoUrl ? `<img src="${state.shopInfo.logoUrl}" class="w-full h-full object-cover rounded-xl" />` : `<i data-lucide="sparkles" class="w-5 h-5"></i>`}
-                </div>
-                <div class="overflow-hidden">
-                  <h2 class="font-bold text-sm text-white truncate">${state.shopInfo.storeName || 'Taj Cares'}</h2>
-                  <p class="text-[11px] text-emerald-400 font-medium">অ্যাডমিন প্যানেল</p>
+      // 2. MAIN DASHBOARD SHELL
+      const pendingOrdersCount = state.orders.filter(o => o.orderStatus === 'Pending').length;
+
+      root.innerHTML = `
+        <div class="min-h-screen bg-slate-50 flex">
+          
+          <!-- MOBILE BACKDROP -->
+          ${state.mobileMenuOpen ? `<div onclick="state.mobileMenuOpen = false; renderApp()" class="fixed inset-0 bg-slate-950/60 z-40 lg:hidden"></div>` : ''}
+
+          <!-- SIDEBAR -->
+          <aside class="fixed top-0 bottom-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 flex flex-col transition-transform duration-300 ease-in-out ${state.mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}">
+            <!-- Brand Header -->
+            <div class="h-18 px-5 flex items-center justify-between border-b border-slate-800 bg-slate-950/40">
+              <div class="flex items-center gap-3 min-w-0">
+                ${state.shopInfo.logoUrl ? `
+                  <div class="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center shrink-0 shadow-md border border-slate-700 overflow-hidden">
+                    <img src="${state.shopInfo.logoUrl}" alt="Logo" class="w-full h-full object-contain rounded-lg" />
+                  </div>
+                ` : `
+                  <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-md shrink-0">
+                    <i data-lucide="shield-check" class="w-6 h-6"></i>
+                  </div>
+                `}
+                <div class="truncate">
+                  <h2 class="text-base font-bold text-white truncate">${state.shopInfo.storeName || 'Taj Cares'}</h2>
+                  <span class="text-[11px] text-emerald-400 font-medium">অ্যাডমিন প্যানেল</span>
                 </div>
               </div>
             </div>
 
             <!-- Navigation Links -->
-            <nav class="flex-1 p-3 space-y-1.5 overflow-y-auto">
-              ${renderNavItem("overview", "layout-dashboard", "ওভারভিউ")}
-              ${renderNavItem("products", "package", "প্রোডাক্ট ম্যানেজমেন্ট", state.products.length)}
-              ${renderNavItem("categories", "tags", "ক্যাটাগরি ম্যানেজমেন্ট", state.categories.length)}
-              ${renderNavItem("orders", "shopping-bag", "অর্ডার ট্র্যাকিং", pendingOrdersCount, "bg-amber-500 text-slate-900")}
-              ${renderNavItem("coupons", "ticket-percent", "প্রোমো কোড ও কুপন", state.coupons.length)}
-              ${renderNavItem("banners", "megaphone", "ব্যানার ও অফার")}
-              ${renderNavItem("delivery", "truck", "ডেলিভারি ফি সেটিংস")}
-              ${renderNavItem("shop", "store", "দোকান ও সাইট কনটেন্ট")}
-            </nav>
+            <div class="flex-1 overflow-y-auto px-4 py-5 space-y-1.5">
+              <div class="px-3 pb-2 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">প্রধান মেনু</div>
 
-            <!-- Bottom Actions -->
-            <div class="p-4 border-t border-slate-800 space-y-2">
-              <button onclick="handleSeedSampleData()" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/60 transition cursor-pointer">
-                <i data-lucide="database" class="w-4 h-4 text-emerald-400"></i>
-                <span>নমুনা ডেটা লোড করুন</span>
-              </button>
-              <button onclick="handleLogout()" class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-rose-300 hover:bg-rose-950/50 hover:text-rose-200 transition cursor-pointer">
+              ${renderSidebarItem('overview', 'ড্যাশবোর্ড ওভারভিউ', 'layout-dashboard')}
+              ${renderSidebarItem('products', 'প্রোডাক্ট ও ইনভেন্টরি', 'package')}
+              ${renderSidebarItem('categories', 'ক্যাটাগরি ম্যানেজমেন্ট', 'folder-tree')}
+              ${renderSidebarItem('orders', 'অর্ডার ট্র্যাকিং', 'shopping-bag', pendingOrdersCount > 0 ? `${pendingOrdersCount} টি নতুন` : null)}
+              ${renderSidebarItem('coupons', 'প্রোমো কোড ও কুপন', 'ticket')}
+              ${renderSidebarItem('banners', 'অফার ও ব্যানার কন্ট্রোল', 'image')}
+              ${renderSidebarItem('delivery', 'ডেলিভারি ফি সেটিংস', 'truck')}
+              ${renderSidebarItem('shop', 'শপ সেটিংস ও সাইট কনটেন্ট', 'store')}
+            </div>
+
+            <!-- Database Live Status & Logout -->
+            <div class="p-4 border-t border-slate-800 bg-slate-950/40 space-y-3">
+              <div class="bg-slate-800/60 rounded-xl p-3 border border-slate-700/60 text-xs">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-slate-400 flex items-center gap-1.5"><i data-lucide="database" class="w-3.5 h-3.5 text-emerald-400"></i> ফায়ারবেস ক্লাউড</span>
+                  <span class="text-emerald-400 font-bold flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span> সংযুক্ত</span>
+                </div>
+                <p class="text-[11px] text-slate-400 truncate">প্রজেক্ট: <span class="font-mono text-slate-300">${firebaseConfig.projectId}</span></p>
+              </div>
+
+              <button onclick="handleLogout()" class="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold text-rose-400 hover:text-rose-200 bg-rose-950/30 hover:bg-rose-900/40 border border-rose-900/40 cursor-pointer transition-colors">
                 <i data-lucide="log-out" class="w-4 h-4"></i>
                 <span>লগআউট করুন</span>
               </button>
             </div>
           </aside>
 
-          <!-- MAIN CONTENT WRAPPER -->
-          <div class="flex-1 flex flex-col h-screen overflow-hidden">
-            <!-- HEADER -->
-            <header class="bg-white border-b border-slate-200 px-4 sm:px-8 py-3.5 flex items-center justify-between shrink-0">
+          <!-- MAIN VIEW AREA -->
+          <div class="flex-1 flex flex-col min-w-0 lg:pl-72">
+            
+            <!-- STICKY TOP NAVBAR -->
+            <header class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-4 sm:px-8 py-3.5 flex items-center justify-between shadow-xs">
               <div class="flex items-center gap-3">
-                <button onclick="state.mobileMenuOpen = !state.mobileMenuOpen; renderApp();" class="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100">
-                  <i data-lucide="menu" class="w-5 h-5"></i>
+                <button onclick="state.mobileMenuOpen = true; renderApp()" class="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100">
+                  <i data-lucide="menu" class="w-6 h-6"></i>
                 </button>
                 <div>
-                  <h1 class="text-lg font-bold text-slate-800 capitalize leading-tight">
+                  <h1 class="text-lg sm:text-xl font-bold text-slate-900 leading-tight">
                     ${getTabTitle(state.currentTab)}
                   </h1>
-                  <p class="text-xs text-slate-500">তাজ কেয়ার্স ক্লাউড ফায়ারস্টোর ড্যাশবোর্ড</p>
                 </div>
               </div>
 
               <div class="flex items-center gap-3">
-                <div class="hidden sm:flex items-center gap-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full text-xs font-bold border border-emerald-200">
-                  <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  <span>লাইভ সিঙ্ক চালু</span>
-                </div>
-                <div class="w-8 h-8 rounded-full bg-slate-900 text-emerald-400 flex items-center justify-center font-bold text-xs ring-2 ring-emerald-500/30">
-                  TC
+                <button onclick="seedAllDemoData()" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 cursor-pointer shadow-xs">
+                  <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                  <span>নমুনা ডেটা লোড</span>
+                </button>
+                <div class="flex items-center gap-2 pl-3 border-l border-slate-200">
+                  <div class="w-8 h-8 rounded-lg bg-slate-900 text-emerald-400 flex items-center justify-center text-xs font-bold">
+                    <i data-lucide="shield" class="w-4 h-4"></i>
+                  </div>
+                  <span class="text-xs font-bold text-slate-800 hidden sm:inline">মাস্টার অ্যাডমিন</span>
                 </div>
               </div>
             </header>
 
-            <!-- MOBILE SLIDEOUT DRAWER -->
-            ${state.mobileMenuOpen ? `
-              <div class="fixed inset-0 z-50 bg-black/50 lg:hidden flex" onclick="state.mobileMenuOpen = false; renderApp();">
-                <div class="w-64 bg-slate-900 text-white h-full p-4 flex flex-col justify-between" onclick="event.stopPropagation()">
-                  <div>
-                    <div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
-                      <span class="font-bold text-white text-base">মেনু নির্বাচন করুন</span>
-                      <button onclick="state.mobileMenuOpen = false; renderApp();" class="text-slate-400 hover:text-white">✕</button>
-                    </div>
-                    <div class="space-y-1">
-                      ${renderNavItem("overview", "layout-dashboard", "ওভারভিউ")}
-                      ${renderNavItem("products", "package", "প্রোডাক্ট")}
-                      ${renderNavItem("categories", "tags", "ক্যাটাগরি")}
-                      ${renderNavItem("orders", "shopping-bag", "অর্ডারসমূহ")}
-                      ${renderNavItem("coupons", "ticket-percent", "কুপন কোড")}
-                      ${renderNavItem("banners", "megaphone", "ব্যানার ও অফার")}
-                      ${renderNavItem("delivery", "truck", "ডেলিভারি ফি")}
-                      ${renderNavItem("shop", "store", "দোকান সেটিংস")}
-                    </div>
-                  </div>
-                  <button onclick="handleLogout()" class="w-full py-2.5 bg-rose-900/60 text-rose-300 rounded-xl font-bold text-xs">লগআউট</button>
-                </div>
-              </div>
-            ` : ''}
-
-            <!-- PAGE CONTENT ROUTER -->
-            <main class="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-              ${renderTabContent()}
+            <!-- TAB CONTENTS -->
+            <main class="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
+              ${renderTabContent(state.currentTab)}
             </main>
           </div>
         </div>
 
-        <!-- MODAL CONTAINER -->
+        <!-- MODAL RENDER -->
         ${renderActiveModal()}
       `;
+
+      lucide.createIcons();
     }
 
-    function renderNavItem(key, icon, label, badge = null, badgeClass = "bg-slate-800 text-slate-300") {
-      const isActive = state.currentTab === key;
+    function renderSidebarItem(tabKey, label, iconName, badge = null) {
+      const isActive = state.currentTab === tabKey;
       return `
-        <button
-          onclick="setTab('${key}')"
-          class="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
-            isActive ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/20" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
-          }"
-        >
+        <button onclick="setTab('${tabKey}')" class="w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+          isActive 
+            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md' 
+            : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+        }">
           <div class="flex items-center gap-3">
-            <i data-lucide="${icon}" class="w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}"></i>
+            <i data-lucide="${iconName}" class="w-5 h-5 ${isActive ? 'text-white' : 'text-slate-400'}"></i>
             <span>${label}</span>
           </div>
-          ${badge !== null ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${isActive ? 'bg-white/20 text-white' : badgeClass}">${badge}</span>` : ''}
+          ${badge ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 font-bold">${badge}</span>` : ''}
         </button>
       `;
     }
 
     function getTabTitle(tab) {
       switch(tab) {
-        case "overview": return "ড্যাশবোর্ড ওভারভিউ";
-        case "products": return "প্রোডাক্ট ও ইনভেন্টরি ম্যানেজমেন্ট";
-        case "categories": return "ডায়নামিক ক্যাটাগরি ম্যানেজমেন্ট";
-        case "orders": return "অর্ডার ট্র্যাকিং ও ডেলিভারি";
-        case "coupons": return "প্রোমো কোড ও কুপন ম্যানেজমেন্ট";
-        case "banners": return "ব্যানার, অফার ও নোটিশ কন্ট্রোল";
-        case "delivery": return "ডেলিভারি ফি সেটিংস (নারায়ণগঞ্জ ও অন্যান্য এলাকা)";
-        case "shop": return "শপ প্রোফাইল ও সাইট কনটেন্ট";
-        default: return "অ্যাডমিন প্যানেল";
+        case 'overview': return 'ড্যাশবোর্ড ওভারভিউ (Taj Cares)';
+        case 'products': return 'প্রোডাক্ট ও ইনভেন্টরি ম্যানেজমেন্ট';
+        case 'categories': return 'ডায়নামিক ক্যাটাগরি ম্যানেজমেন্ট';
+        case 'orders': return 'অর্ডার ট্র্যাকিং ও ডেলিভারি';
+        case 'coupons': return 'প্রোমো কোড ও কুপন ম্যানেজমেন্ট';
+        case 'banners': return 'অফার ও ব্যানার কন্ট্রোল';
+        case 'delivery': return 'ডেলিভারি ফি সেটিংস (Narayanganj & Outside)';
+        case 'shop': return 'শপ সেটিংস ও সাইট কনটেন্ট কন্ট্রোল';
+        default: return 'অ্যাডমিন ড্যাশবোর্ড';
       }
     }
 
     // -------------------------------------------------------------
     // 9. TAB CONTENT GENERATORS
     // -------------------------------------------------------------
-    function renderTabContent() {
-      switch (state.currentTab) {
-        case "overview": return renderOverviewTab();
-        case "products": return renderProductsTab();
-        case "categories": return renderCategoriesTab();
-        case "orders": return renderOrdersTab();
-        case "coupons": return renderCouponsTab();
-        case "banners": return renderBannersTab();
-        case "delivery": return renderDeliveryTab();
-        case "shop": return renderShopTab();
-        default: return `<div>ট্যাব পাওয়া যায়নি</div>`;
+    function renderTabContent(tab) {
+      switch(tab) {
+        case 'overview': return renderOverviewTab();
+        case 'products': return renderProductsTab();
+        case 'categories': return renderCategoriesTab();
+        case 'orders': return renderOrdersTab();
+        case 'coupons': return renderCouponsTab();
+        case 'banners': return renderBannersTab();
+        case 'delivery': return renderDeliveryTab();
+        case 'shop': return renderShopTab();
+        default: return '';
       }
     }
 
-    // Overview Tab
+    // --- OVERVIEW TAB ---
     function renderOverviewTab() {
-      const totalSales = state.orders.reduce((acc, o) => acc + (Number(o.totalAmount) || 0), 0);
-      const pendingOrders = state.orders.filter(o => o.status === 'pending').length;
-      const completedOrders = state.orders.filter(o => o.status === 'delivered').length;
-      const inStockCount = state.products.filter(p => p.stockStatus !== 'out_of_stock').length;
+      const totalSales = state.orders.reduce((sum, o) => o.orderStatus === 'Delivered' || o.paymentStatus === 'paid' ? sum + (o.totalAmount || 0) : sum, 0);
+      const pendingCount = state.orders.filter(o => o.orderStatus === 'Pending').length;
 
       return `
         <div class="space-y-6">
-          <!-- TOP BANNER -->
-          <div class="bg-linear-to-r from-emerald-700 via-teal-700 to-slate-900 rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden">
-            <div class="max-w-xl">
-              <span class="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider mb-3 inline-block">স্বাগতম</span>
-              <h2 class="text-2xl sm:text-3xl font-extrabold mb-2">${state.shopInfo.storeName || 'তাজ কেয়ার্স'} অ্যাডমিন প্যানেল</h2>
-              <p class="text-sm text-emerald-100 leading-relaxed mb-4">
-                আপনার প্রোডাক্ট ইনভেন্টরি, ডেলিভারি রেট, প্রমোশনাল অফার এবং রিয়েল-টাইম কাস্টমার অর্ডারসমূহ সহজে এক জায়গা থেকে পরিচালনা করুন।
-              </p>
-              <div class="flex flex-wrap gap-2.5">
-                <button onclick="openModal('addProduct')" class="px-4 py-2 bg-white text-emerald-800 hover:bg-emerald-50 rounded-xl text-xs font-bold flex items-center gap-1.5 transition shadow">
-                  <i data-lucide="plus" class="w-3.5 h-3.5"></i> নতুন পণ্য যোগ করুন
-                </button>
-                <button onclick="setTab('orders')" class="px-4 py-2 bg-emerald-900/60 hover:bg-emerald-900 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 border border-white/20 transition">
-                  <i data-lucide="shopping-cart" class="w-3.5 h-3.5"></i> অর্ডার দেখুন (${pendingOrders})
-                </button>
-              </div>
+          <!-- Top Hero Card -->
+          <div class="bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 rounded-2xl p-6 text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-emerald-700/50">
+            <div>
+              <span class="inline-block px-3 py-1 rounded-full bg-emerald-700/60 text-emerald-200 text-xs font-semibold mb-2">
+                ✨ তাজ কেয়ার্স এডমিন প্যানেল
+              </span>
+              <h2 class="text-xl sm:text-2xl font-bold">আজকের বিক্রয় ও অর্ডারের সার্বিক চিত্র</h2>
+              <p class="text-emerald-100 text-xs sm:text-sm mt-1">রিয়েল-টাইম ফায়ারবেস ডেটাবেসের সাথে সংযুক্ত রয়েছে।</p>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="openModal('addProduct')" class="px-4 py-2.5 rounded-xl bg-white text-emerald-950 font-bold text-xs shadow-md cursor-pointer hover:bg-emerald-50">
+                + নতুন পণ্য যোগ
+              </button>
+              <button onclick="setTab('orders')" class="px-4 py-2.5 rounded-xl bg-emerald-700 text-white font-semibold text-xs border border-emerald-600 cursor-pointer hover:bg-emerald-600">
+                সকল অর্ডার দেখুন →
+              </button>
             </div>
           </div>
 
-          <!-- METRICS CARDS -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-              <div>
-                <p class="text-xs text-slate-500 font-bold mb-1">মোট বিক্রয় (Revenue)</p>
-                <h3 class="text-2xl font-black text-slate-900">${formatBDT(totalSales)}</h3>
-                <span class="text-[11px] text-emerald-600 font-medium">লাইভ অর্ডার থেকে গণনাকৃত</span>
-              </div>
-              <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                <i data-lucide="wallet" class="w-6 h-6"></i>
-              </div>
+          <!-- 4 Metrics Grid -->
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+              <span class="text-xs text-slate-500 font-medium">মোট বিক্রয় (সংগৃহীত)</span>
+              <div class="text-2xl font-bold text-slate-900 mt-1">${formatBDT(totalSales)}</div>
             </div>
-
-            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-              <div>
-                <p class="text-xs text-slate-500 font-bold mb-1">পেন্ডিং অর্ডার</p>
-                <h3 class="text-2xl font-black text-amber-600">${pendingOrders} টি</h3>
-                <span class="text-[11px] text-amber-600 font-medium">ডেলিভারির অপেক্ষায়</span>
-              </div>
-              <div class="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                <i data-lucide="clock" class="w-6 h-6"></i>
-              </div>
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+              <span class="text-xs text-slate-500 font-medium">সর্বমোট অর্ডার</span>
+              <div class="text-2xl font-bold text-slate-900 mt-1">${state.orders.length} টি</div>
             </div>
-
-            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-              <div>
-                <p class="text-xs text-slate-500 font-bold mb-1">মোট প্রোডাক্ট</p>
-                <h3 class="text-2xl font-black text-slate-900">${state.products.length} টি</h3>
-                <span class="text-[11px] text-emerald-600 font-medium">${inStockCount} টি স্টকে আছে</span>
-              </div>
-              <div class="w-12 h-12 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center">
-                <i data-lucide="package" class="w-6 h-6"></i>
-              </div>
+            <div onclick="setTab('orders')" class="bg-white p-5 rounded-2xl border border-amber-200 shadow-xs cursor-pointer hover:border-amber-300">
+              <span class="text-xs text-amber-700 font-bold">পেন্ডিং অর্ডার (অপেক্ষমাণ)</span>
+              <div class="text-2xl font-bold text-amber-600 mt-1">${pendingCount} টি</div>
             </div>
-
-            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs flex items-center justify-between">
-              <div>
-                <p class="text-xs text-slate-500 font-bold mb-1">নারায়ণগঞ্জ ডেলিভারি ফি</p>
-                <h3 class="text-2xl font-black text-slate-900">${formatBDT(state.deliverySettings.narayanganjFee)}</h3>
-                <span class="text-[11px] text-slate-500 font-medium">বাইরে: ${formatBDT(state.deliverySettings.outsideNarayanganjFee)}</span>
-              </div>
-              <div class="w-12 h-12 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center">
-                <i data-lucide="map-pin" class="w-6 h-6"></i>
-              </div>
+            <div onclick="setTab('products')" class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs cursor-pointer">
+              <span class="text-xs text-slate-500 font-medium">মোট পণ্য সংখ্যা</span>
+              <div class="text-2xl font-bold text-slate-900 mt-1">${state.products.length} টি</div>
             </div>
           </div>
 
-          <!-- RECENT ORDERS PREVIEW -->
-          <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          <!-- Recent Orders Stream -->
+          <div class="bg-white rounded-2xl border border-slate-200/80 overflow-hidden shadow-xs">
             <div class="p-5 border-b border-slate-100 flex items-center justify-between">
-              <h3 class="font-bold text-slate-800 text-sm flex items-center gap-2">
-                <i data-lucide="activity" class="w-4 h-4 text-emerald-600"></i> সাম্প্রতিক অর্ডারসমূহ
-              </h3>
-              <button onclick="setTab('orders')" class="text-xs font-bold text-emerald-600 hover:text-emerald-700">সবগুলো দেখুন →</button>
+              <h3 class="font-bold text-slate-900 text-sm sm:text-base">সাম্প্রতিক অর্ডারসমূহ</h3>
+              <button onclick="setTab('orders')" class="text-xs font-bold text-emerald-600 hover:underline">সবগুলো দেখুন →</button>
             </div>
-            ${renderRecentOrdersTable()}
+            <div class="divide-y divide-slate-100">
+              ${state.orders.slice(0, 5).map(o => `
+                <div class="p-4 flex items-center justify-between gap-3 hover:bg-slate-50">
+                  <div>
+                    <div class="font-bold text-sm text-slate-900">${o.customerName} <span class="text-xs text-slate-400 font-mono">(${o.customerPhone})</span></div>
+                    <div class="text-xs text-slate-500 line-clamp-1">${o.customerAddress} (${o.customerDistrict || 'নারায়ণগঞ্জ'})</div>
+                  </div>
+                  <div class="text-right">
+                    <div class="font-bold text-sm text-slate-900">${formatBDT(o.totalAmount)}</div>
+                    <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${o.orderStatus === 'Pending' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}">${o.orderStatus}</span>
+                  </div>
+                </div>
+              `).join('') || `<div class="p-8 text-center text-slate-400 text-xs">কোন অর্ডার পাওয়া যায়নি।</div>`}
+            </div>
           </div>
         </div>
       `;
     }
 
-    function renderRecentOrdersTable() {
-      if (!state.orders.length) {
-        return `<div class="p-8 text-center text-slate-400 text-xs font-medium">কোনো অর্ডার এখনো পাওয়া যায়নি। উপরে 'নমুনা ডেটা লোড' বাটনে ক্লিক করে টেস্ট অর্ডার তৈরি করতে পারেন।</div>`;
-      }
-      return `
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-slate-50 text-slate-600 font-bold border-b border-slate-200/80">
-              <tr>
-                <th class="p-3.5 pl-5">অর্ডার আইডি</th>
-                <th class="p-3.5">কাস্টমার</th>
-                <th class="p-3.5">এলাকা</th>
-                <th class="p-3.5">মোট মূল্য</th>
-                <th class="p-3.5">স্ট্যাটাস</th>
-                <th class="p-3.5 pr-5 text-right">ইনভয়েস</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-              ${state.orders.slice(0, 5).map(o => `
-                <tr class="hover:bg-slate-50/70">
-                  <td class="p-3.5 pl-5 font-mono font-bold text-slate-900">${o.orderNumber || o.id.slice(0, 8)}</td>
-                  <td class="p-3.5">
-                    <div class="font-bold text-slate-800">${o.customerName || 'বেনামী গ্রাহক'}</div>
-                    <div class="text-[11px] text-slate-400">${o.customerPhone || ''}</div>
-                  </td>
-                  <td class="p-3.5">
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${o.deliveryZone === 'narayanganj' ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-purple-50 text-purple-700 border border-purple-200'}">
-                      ${o.deliveryZone === 'narayanganj' ? 'নারায়ণগঞ্জ' : 'অন্যান্য এলাকা'}
-                    </span>
-                  </td>
-                  <td class="p-3.5 font-bold text-slate-900">${formatBDT(o.totalAmount)}</td>
-                  <td class="p-3.5">
-                    ${renderOrderStatusBadge(o.status)}
-                  </td>
-                  <td class="p-3.5 pr-5 text-right">
-                    <button onclick='openModal("orderInvoice", ${JSON.stringify(o).replace(/'/g, "&apos;")})' class="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg">
-                      <i data-lucide="printer" class="w-4 h-4"></i>
-                    </button>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
-
-    function renderOrderStatusBadge(status) {
-      switch(status) {
-        case 'pending':
-          return `<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">অপেক্ষারত</span>`;
-        case 'processing':
-          return `<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">প্রসেসিং</span>`;
-        case 'delivered':
-          return `<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">ডেলিভার্ড</span>`;
-        case 'cancelled':
-          return `<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">বাতিল</span>`;
-        default:
-          return `<span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">${status}</span>`;
-      }
-    }
-
-    // Products Tab
+    // --- PRODUCTS TAB ---
     function renderProductsTab() {
-      let filtered = state.products;
-      if (state.productSearch) {
-        const q = state.productSearch.toLowerCase();
-        filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q));
-      }
+      const filtered = state.products.filter(p => {
+        const matchesSearch = p.name?.toLowerCase().includes(state.productSearch.toLowerCase());
+        const matchesCat = state.productCategoryFilter === 'all' || p.category === state.productCategoryFilter;
+        return matchesSearch && matchesCat;
+      });
 
       return `
         <div class="space-y-6">
-          <!-- Toolbar -->
-          <div class="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
-            <div class="w-full sm:w-72 relative">
-              <input
-                type="text"
-                placeholder="প্রোডাক্ট খুঁজুন..."
-                value="${state.productSearch}"
-                oninput="state.productSearch = this.value; renderApp();"
-                class="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">পণ্য তালিকা (${filtered.length} টি)</h2>
+              <p class="text-xs text-slate-500">গ্যালারি থেকে ছবি আপলোড, মূল্য ও বিশেষ ডেলিভারি ফি নিয়ন্ত্রণ করুন</p>
             </div>
-            <button
-              onclick="openModal('addProduct')"
-              class="w-full sm:w-auto px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 cursor-pointer"
-            >
-              <i data-lucide="plus-circle" class="w-4 h-4"></i>
-              <span>নতুন প্রোডাক্ট যোগ করুন</span>
+            <button onclick="openModal('addProduct')" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md cursor-pointer flex items-center gap-1.5 self-start sm:self-auto">
+              <span>+ নতুন পণ্য যুক্ত করুন</span>
             </button>
+          </div>
+
+          <!-- Search & Category Filters -->
+          <div class="bg-white p-3 rounded-2xl border border-slate-200 flex flex-col sm:flex-row gap-3">
+            <input 
+              type="text" 
+              placeholder="পণ্যের নাম দিয়ে খুঁজুন..." 
+              value="${state.productSearch}"
+              oninput="state.productSearch = this.value; renderApp()"
+              class="flex-1 px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white"
+            />
+            <select 
+              onchange="state.productCategoryFilter = this.value; renderApp()"
+              class="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-medium cursor-pointer"
+            >
+              <option value="all">সকল ক্যাটাগরি</option>
+              ${state.categories.map(c => `<option value="${c.name}" ${state.productCategoryFilter === c.name ? 'selected' : ''}>${c.name}</option>`).join('')}
+            </select>
           </div>
 
           <!-- Product Grid -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             ${filtered.map(p => `
-              <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex flex-col group hover:shadow-md transition">
-                <div class="h-44 w-full bg-slate-100 relative overflow-hidden">
-                  <img src="${p.imageUrl || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=500'}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
-                  <span class="absolute top-2.5 left-2.5 px-2 py-0.5 rounded-md text-[10px] font-bold backdrop-blur-md ${
-                    p.stockStatus === 'out_of_stock' ? 'bg-rose-500/90 text-white' : 'bg-emerald-600/90 text-white'
-                  }">
-                    ${p.stockStatus === 'out_of_stock' ? 'স্টক শেষ' : 'স্টকে আছে'}
-                  </span>
-                  ${p.specialDeliveryFee > 0 ? `
-                    <span class="absolute top-2.5 right-2.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500 text-white shadow">
-                      +${formatBDT(p.specialDeliveryFee)} বিশেষ ডেলিভারি
+              <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs hover:shadow-md transition-all flex flex-col justify-between group">
+                <div>
+                  <div class="aspect-square bg-slate-100 overflow-hidden relative">
+                    <img src="${p.imageUrl}" alt="${p.name}" class="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                    <span class="absolute top-2.5 left-2.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${p.stockStatus === 'in_stock' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">
+                      ${p.stockStatus === 'in_stock' ? 'ইন স্টক' : p.stockStatus === 'limited_stock' ? 'সীমিত স্টক' : 'স্টক আউট'}
                     </span>
-                  ` : ''}
+                    ${p.specialDeliveryFee > 0 ? `
+                      <span class="absolute bottom-2.5 left-2.5 text-[9px] font-bold px-2 py-0.5 rounded bg-amber-500 text-slate-950">
+                        বিশেষ ফি: ${formatBDT(p.specialDeliveryFee)}
+                      </span>
+                    ` : ''}
+                  </div>
+                  <div class="p-4">
+                    <span class="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">${p.category}</span>
+                    <h3 class="font-bold text-slate-900 text-sm mt-1.5 line-clamp-2">${p.name}</h3>
+                    <div class="mt-2 text-base font-bold text-emerald-700">${formatBDT(p.price)}</div>
+                  </div>
                 </div>
-                <div class="p-4 flex-1 flex flex-col justify-between">
-                  <div>
-                    <span class="text-[10px] font-semibold text-emerald-600 mb-1 block">${p.category || 'সাধারণ পণ্য'}</span>
-                    <h4 class="font-bold text-slate-900 text-sm mb-1 leading-snug line-clamp-1">${p.name}</h4>
-                    <p class="text-xs text-slate-500 line-clamp-2 mb-3">${p.description || 'কোনো বিবরণ নেই।'}</p>
-                  </div>
-                  <div>
-                    <div class="flex items-baseline gap-2 mb-3">
-                      <span class="text-lg font-black text-slate-900">${formatBDT(p.price)}</span>
-                      ${p.regularPrice ? `<span class="text-xs text-slate-400 line-through">${formatBDT(p.regularPrice)}</span>` : ''}
-                    </div>
-                    <div class="flex items-center gap-2 pt-2 border-t border-slate-100">
-                      <button onclick='openModal("editProduct", ${JSON.stringify(p).replace(/'/g, "&apos;")})' class="flex-1 py-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-700 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1">
-                        <i data-lucide="edit-3" class="w-3.5 h-3.5"></i> এডিট
-                      </button>
-                      <button onclick="handleDeleteProduct('${p.id}')" class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition">
-                        <i data-lucide="trash-2" class="w-4 h-4"></i>
-                      </button>
-                    </div>
-                  </div>
+
+                <div class="p-4 pt-0 border-t border-slate-100 flex items-center justify-between gap-2 mt-2">
+                  <button onclick='openModal("editProduct", ${JSON.stringify(p).replace(/'/g, "&apos;")})' class="flex-1 py-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-xs font-bold rounded-lg transition-colors cursor-pointer">
+                    এডিট
+                  </button>
+                  <button onclick="handleDeleteProduct('${p.id}')" class="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  </button>
                 </div>
               </div>
-            `).join('')}
+            `).join('') || `<div class="col-span-full p-12 text-center text-slate-400">কোন পণ্য পাওয়া যায়নি।</div>`}
           </div>
-          ${!filtered.length ? `<div class="p-12 text-center text-slate-400 text-xs">কোনো প্রোডাক্ট পাওয়া যায়নি।</div>` : ''}
         </div>
       `;
     }
 
-    // Categories Tab
+    // --- CATEGORIES TAB ---
     function renderCategoriesTab() {
       return `
         <div class="space-y-6">
-          <div class="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div class="flex items-center justify-between">
             <div>
-              <h3 class="font-bold text-slate-800 text-sm">ডায়নামিক ক্যাটাগরি তালিকা</h3>
-              <p class="text-xs text-slate-500">মোট ক্যাটাগরি: ${state.categories.length} টি</p>
+              <h2 class="text-lg font-bold text-slate-900">ক্যাটাগরি তালিকা</h2>
+              <p class="text-xs text-slate-500">ভেষজ ও রূপচর্চা, পোশাক, হোমমেড ফুড ইত্যাদি ক্যাটাগরি তৈরি করুন</p>
             </div>
-            <button onclick="openModal('addCategory')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow">
-              <i data-lucide="plus" class="w-4 h-4"></i> নতুন ক্যাটাগরি
+            <button onclick="openModal('addCategory')" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md cursor-pointer">
+              + নতুন ক্যাটাগরি যোগ
             </button>
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             ${state.categories.map(c => `
-              <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between">
+              <div class="bg-white p-5 rounded-2xl border border-slate-200 flex items-center justify-between shadow-xs">
                 <div>
-                  <div class="flex items-center justify-between mb-2">
-                    <span class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
-                      <i data-lucide="tag" class="w-4 h-4"></i>
-                    </span>
-                    <button onclick="handleDeleteCategory('${c.id}')" class="text-slate-400 hover:text-rose-600 p-1">
-                      <i data-lucide="trash-2" class="w-4 h-4"></i>
-                    </button>
-                  </div>
-                  <h4 class="font-bold text-slate-900 text-sm mb-1">${c.name}</h4>
-                  <p class="text-xs text-slate-500 mb-3">${c.description || 'কোনো বিবরণ নেই।'}</p>
+                  <h3 class="font-bold text-slate-900 text-base">${c.name}</h3>
+                  <p class="text-xs text-slate-500 mt-0.5">${c.description || 'তাজ কেয়ার্স কালেকশন'}</p>
                 </div>
-                <div class="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
-                  <span>পণ্য সংখ্যা: ${state.products.filter(p => p.category === c.name).length} টি</span>
-                  <button onclick='openModal("editCategory", ${JSON.stringify(c).replace(/'/g, "&apos;")})' class="text-emerald-600 font-bold hover:underline">এডিট করুন</button>
-                </div>
+                <button onclick="handleDeleteCategory('${c.id}')" class="text-slate-400 hover:text-rose-600 p-1.5 cursor-pointer">
+                  <i data-lucide="trash-2" class="w-4 h-4"></i>
+                </button>
               </div>
-            `).join('')}
+            `).join('') || `<div class="col-span-full p-12 text-center text-slate-400">কোন ক্যাটাগরি নেই।</div>`}
           </div>
-          ${!state.categories.length ? `<div class="p-12 text-center text-slate-400 text-xs">কোনো ক্যাটাগরি পাওয়া যায়নি। 'নতুন ক্যাটাগরি' বাটনে ক্লিক করে যুক্ত করুন।</div>` : ''}
         </div>
       `;
     }
 
-    // Orders Tab
+    // --- ORDERS TAB ---
     function renderOrdersTab() {
-      let filtered = state.orders;
-      if (state.orderStatusFilter !== 'all') {
-        filtered = filtered.filter(o => o.status === state.orderStatusFilter);
-      }
-      if (state.orderSearch) {
-        const q = state.orderSearch.toLowerCase();
-        filtered = filtered.filter(o => (o.customerName || '').toLowerCase().includes(q) || (o.customerPhone || '').includes(q) || (o.orderNumber || '').toLowerCase().includes(q));
-      }
-
       return `
         <div class="space-y-6">
-          <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-              ${['all', 'pending', 'processing', 'delivered', 'cancelled'].map(st => `
-                <button
-                  onclick="state.orderStatusFilter = '${st}'; renderApp();"
-                  class="px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    state.orderStatusFilter === st ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }"
-                >
-                  ${st === 'all' ? 'সব অর্ডার' : st === 'pending' ? 'পেন্ডিং' : st === 'processing' ? 'প্রসেসিং' : st === 'delivered' ? 'ডেলিভার্ড' : 'বাতিল'}
-                </button>
-              `).join('')}
-            </div>
-            <div class="w-full sm:w-64 relative">
-              <input
-                type="text"
-                placeholder="নাম বা মোবাইল দিয়ে খুঁজুন..."
-                value="${state.orderSearch}"
-                oninput="state.orderSearch = this.value; renderApp();"
-                class="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none"
-              />
-              <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">অর্ডার ট্র্যাকিং ও ডেলিভারি (${state.orders.length} টি)</h2>
+              <p class="text-xs text-slate-500">গ্রাহকদের লাইভ অর্ডার নিরীক্ষা, স্ট্যাটাস আপডেট ও ইনভয়েস রসিদ</p>
             </div>
           </div>
 
-          <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+          <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
             <div class="overflow-x-auto">
               <table class="w-full text-left text-xs">
-                <thead class="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                <thead class="bg-slate-50 border-b border-slate-200 font-bold text-slate-500 uppercase">
                   <tr>
-                    <th class="p-3.5 pl-5">অর্ডার কোড</th>
-                    <th class="p-3.5">কাস্টমার ও ঠিকানা</th>
-                    <th class="p-3.5">ডেলিভারি অঞ্চল</th>
-                    <th class="p-3.5">আইটেম সংখ্যা</th>
-                    <th class="p-3.5">মোট মূল্য</th>
-                    <th class="p-3.5">বর্তমান স্ট্যাটাস</th>
-                    <th class="p-3.5 pr-5 text-right">ইনভয়েস</th>
+                    <th class="p-4">অর্ডার কোড ও তারিখ</th>
+                    <th class="p-4">গ্রাহক ও মোবাইল</th>
+                    <th class="p-4">ঠিকানা ও জেলা</th>
+                    <th class="p-4">অর্ডারকৃত পণ্য</th>
+                    <th class="p-4">সর্বমোট</th>
+                    <th class="p-4">পেমেন্ট</th>
+                    <th class="p-4">স্ট্যাটাস</th>
+                    <th class="p-4 text-right">পদক্ষেপ</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
-                  ${filtered.map(o => `
+                  ${state.orders.map(o => `
                     <tr class="hover:bg-slate-50">
-                      <td class="p-3.5 pl-5 font-mono font-bold text-slate-900">${o.orderNumber || o.id.slice(0, 8)}</td>
-                      <td class="p-3.5">
-                        <div class="font-bold text-slate-800">${o.customerName || 'গ্রাহক'}</div>
-                        <div class="text-[11px] text-slate-500">${o.customerPhone || ''}</div>
-                        <div class="text-[11px] text-slate-400 truncate max-w-xs">${o.address || ''}</div>
+                      <td class="p-4 font-mono font-bold text-slate-800">
+                        <div>${o.orderNumber || (o.id ? (o.id.startsWith('#') ? o.id : '#' + o.id.slice(0, 8)) : '#অর্ডার')}</div>
+                        <div class="text-[10px] text-slate-400 font-sans font-normal mt-0.5">${window.formatOrderDate(o.createdAt)}</div>
                       </td>
-                      <td class="p-3.5">
-                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          o.deliveryZone === 'narayanganj' ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-purple-50 text-purple-700 border border-purple-200'
-                        }">
-                          ${o.deliveryZone === 'narayanganj' ? 'নারায়ণগঞ্জ' : 'অন্যান্য এলাকা'}
-                        </span>
-                        <div class="text-[10px] text-slate-400 mt-0.5">চার্জ: ${formatBDT(o.deliveryFee)}</div>
+                      <td class="p-4 font-bold text-slate-900">
+                        <div>${o.customerName || 'সম্মানিত গ্রাহক'}</div>
+                        <span class="font-mono text-emerald-700 font-normal text-[11px]">${o.customerPhone && o.customerPhone !== 'ফোন নম্বর নেই' ? o.customerPhone : 'ফোন নম্বর নেই'}</span>
                       </td>
-                      <td class="p-3.5 font-bold">${(o.items || []).length} টি</td>
-                      <td class="p-3.5 font-bold text-slate-900">${formatBDT(o.totalAmount)}</td>
-                      <td class="p-3.5">
-                        <select
-                          onchange="handleUpdateOrderStatus('${o.id}', this.value)"
-                          class="px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                        >
-                          <option value="pending" ${o.status === 'pending' ? 'selected' : ''}>পেন্ডিং</option>
-                          <option value="processing" ${o.status === 'processing' ? 'selected' : ''}>প্রসেসিং</option>
-                          <option value="delivered" ${o.status === 'delivered' ? 'selected' : ''}>ডেলিভার্ড</option>
-                          <option value="cancelled" ${o.status === 'cancelled' ? 'selected' : ''}>বাতিল</option>
+                      <td class="p-4 text-slate-600 max-w-xs truncate">${o.customerAddress || 'ঠিকানা দেওয়া হয়নি'} (${o.customerDistrict || 'নারায়ণগঞ্জ'})</td>
+                      <td class="p-4 text-slate-600">
+                        ${(o.items || []).length > 0 
+                          ? (o.items || []).map(it => `${it.productName || 'পণ্য'} (x${it.quantity || 1})`).join(', ') 
+                          : 'কোন পণ্য উল্লেখ নেই'}
+                      </td>
+                      <td class="p-4 font-bold font-mono text-slate-900">${formatBDT(o.totalAmount)}</td>
+                      <td class="p-4">
+                        <button onclick="handleToggleOrderPayment('${o.id}', '${o.paymentStatus}')" class="px-2 py-0.5 rounded-full font-bold cursor-pointer ${o.paymentStatus === 'paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">
+                          ${o.paymentStatus === 'paid' ? 'পরিশোধিত' : 'বাকি (COD)'}
+                        </button>
+                      </td>
+                      <td class="p-4">
+                        <select onchange="handleUpdateOrderStatus('${o.id}', this.value)" class="px-2.5 py-1 rounded-lg border font-bold text-xs outline-none cursor-pointer">
+                          <option value="Pending" ${o.orderStatus === 'Pending' ? 'selected' : ''}>পেন্ডিং</option>
+                          <option value="Processing" ${o.orderStatus === 'Processing' ? 'selected' : ''}>প্রসেসিং</option>
+                          <option value="Delivered" ${o.orderStatus === 'Delivered' ? 'selected' : ''}>ডেলিভার্ড</option>
+                          <option value="Cancelled" ${o.orderStatus === 'Cancelled' ? 'selected' : ''}>বাতিল</option>
                         </select>
                       </td>
-                      <td class="p-3.5 pr-5 text-right">
-                        <button onclick='openModal("orderInvoice", ${JSON.stringify(o).replace(/'/g, "&apos;")})' class="px-2.5 py-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ml-auto">
-                          <i data-lucide="printer" class="w-3.5 h-3.5"></i> ইনভয়েস
+                      <td class="p-4 text-right">
+                        <button onclick='openModal("orderInvoice", ${JSON.stringify(o).replace(/'/g, "&apos;")})' class="px-3 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg font-bold text-slate-700 cursor-pointer">
+                          ইনভয়েস বিল
                         </button>
                       </td>
                     </tr>
-                  `).join('')}
+                  `).join('') || `<tr><td colspan="8" class="p-8 text-center text-slate-400">কোন অর্ডার নেই।</td></tr>`}
                 </tbody>
               </table>
-              ${!filtered.length ? `<div class="p-12 text-center text-slate-400 text-xs">কোনো অর্ডার মেলেনি।</div>` : ''}
             </div>
           </div>
         </div>
       `;
     }
 
-    // Coupons Tab
+    // --- COUPONS TAB ---
     function renderCouponsTab() {
       return `
         <div class="space-y-6">
-          <div class="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div class="flex items-center justify-between">
             <div>
-              <h3 class="font-bold text-slate-800 text-sm">প্রোমো কোড ও কুপন তালিকা</h3>
-              <p class="text-xs text-slate-500">মোট সক্রিয় কুপন: ${state.coupons.length} টি</p>
+              <h2 class="text-lg font-bold text-slate-900">প্রোমো কোড ও কুপন (${state.coupons.length} টি)</h2>
+              <p class="text-xs text-slate-500">বিশেষ অফার কুপন, শতকরা বা নগদ ছাড় ও নূন্যতম অর্ডার সীমা নির্ধারণ</p>
             </div>
-            <button onclick="openModal('addCoupon')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow">
-              <i data-lucide="ticket" class="w-4 h-4"></i> নতুন কুপন তৈরি
+            <button onclick="openModal('addCoupon')" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md cursor-pointer">
+              + নতুন কুপন তৈরি
             </button>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            ${state.coupons.map(cp => `
-              <div class="bg-white rounded-2xl border border-dashed border-emerald-300 p-5 shadow-xs relative overflow-hidden flex flex-col justify-between">
-                <div class="absolute -right-6 -bottom-6 w-20 h-20 bg-emerald-50 rounded-full"></div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            ${state.coupons.map(c => `
+              <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between">
                 <div>
-                  <div class="flex items-center justify-between mb-3">
-                    <span class="px-3 py-1 bg-emerald-100 text-emerald-800 font-mono font-black text-sm rounded-lg tracking-wider">
-                      ${cp.code}
-                    </span>
-                    <button onclick="handleDeleteCoupon('${cp.id}')" class="text-slate-400 hover:text-rose-600">
-                      <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  <div class="flex items-center justify-between">
+                    <span class="px-3 py-1 bg-slate-900 text-emerald-400 font-mono font-bold text-sm rounded-lg tracking-wider">${c.code}</span>
+                    <button onclick="handleToggleCoupon('${c.id}', ${c.isActive})" class="text-[11px] font-bold px-2 py-0.5 rounded-full cursor-pointer ${c.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'}">
+                      ${c.isActive ? 'সক্রিয়' : 'নিষ্ক্রিয়'}
                     </button>
                   </div>
-                  <div class="text-xl font-black text-slate-900 mb-1">
-                    ${cp.discountType === 'percentage' ? `${cp.discountAmount}% ছাড়` : `${formatBDT(cp.discountAmount)} ফ্ল্যাট ছাড়`}
+                  <div class="my-3">
+                    <div class="text-2xl font-bold text-emerald-700">${c.discountType === 'percentage' ? `${c.discountAmount}%` : formatBDT(c.discountAmount)} ছাড়</div>
+                    <p class="text-xs text-slate-500 mt-1">${c.minOrderAmount > 0 ? `নূন্যতম অর্ডার: ${formatBDT(c.minOrderAmount)}` : 'কোন নূন্যতম সীমা নেই'}</p>
                   </div>
-                  <p class="text-xs text-slate-500 mb-2">
-                    ${cp.minOrderAmount > 0 ? `ন্যূনতম অর্ডার: ${formatBDT(cp.minOrderAmount)}` : 'সকল অর্ডারে প্রযোজ্য'}
-                  </p>
                 </div>
-                <div class="pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-                  <span class="flex items-center gap-1 text-emerald-600 font-bold">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> সক্রিয় কুপন
-                  </span>
-                  <span>ফায়ারস্টোর কালেকশন: coupons</span>
+                <div class="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
+                  <span>ব্যবহার: <strong>${c.usageCount || 0}</strong> বার</span>
+                  <button onclick="handleDeleteCoupon('${c.id}')" class="text-slate-400 hover:text-rose-600 cursor-pointer">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  </button>
                 </div>
               </div>
-            `).join('')}
+            `).join('') || `<div class="col-span-full p-12 text-center text-slate-400">কোন কুপন পাওয়া যায়নি।</div>`}
           </div>
-          ${!state.coupons.length ? `<div class="p-12 text-center text-slate-400 text-xs">কোনো কুপন তৈরি করা হয়নি। 'নতুন কুপন তৈরি' বাটনে ক্লিক করে ছাড় কোড যোগ করুন।</div>` : ''}
         </div>
       `;
     }
 
-    // Delivery Tab (Narayanganj & Outside Narayanganj)
+    // --- BANNERS TAB ---
+    function renderBannersTab() {
+      return `
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">অফার ও ব্যানার কন্ট্রোল</h2>
+              <p class="text-xs text-slate-500">হোমপেজ ব্যানার স্লাইডার ও ক্যাম্পেইন ছবি পরিবর্তন করুন</p>
+            </div>
+            <button onclick="openModal('addBanner')" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md cursor-pointer">
+              + নতুন ব্যানার যোগ
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            ${state.banners.map(b => `
+              <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs flex flex-col justify-between">
+                <div>
+                  <div class="aspect-video bg-slate-100 relative overflow-hidden">
+                    <img src="${b.imageUrl}" alt="${b.title}" class="w-full h-full object-cover" />
+                    ${b.badgeText ? `<span class="absolute top-2.5 left-2.5 text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500 text-slate-950">${b.badgeText}</span>` : ''}
+                  </div>
+                  <div class="p-4">
+                    <h3 class="font-bold text-slate-900 text-base">${b.title}</h3>
+                    <p class="text-xs text-slate-500 mt-1">${b.subtitle || ''}</p>
+                  </div>
+                </div>
+                <div class="p-4 pt-0 border-t border-slate-100 flex justify-end">
+                  <button onclick="handleDeleteBanner('${b.id}')" class="text-rose-600 hover:bg-rose-50 p-1.5 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i> ব্যানার মুছুন
+                  </button>
+                </div>
+              </div>
+            `).join('') || `<div class="col-span-full p-12 text-center text-slate-400">কোন ব্যানার নেই।</div>`}
+          </div>
+        </div>
+      `;
+    }
+
+    // --- DELIVERY TAB ---
     function renderDeliveryTab() {
       const d = state.deliverySettings;
       return `
-        <div class="max-w-4xl mx-auto space-y-6">
-          <div class="bg-linear-to-r from-sky-700 to-indigo-900 rounded-3xl p-6 sm:p-8 text-white shadow-xl">
-            <h2 class="text-2xl font-bold mb-2">ডেলিভারি ফি সেটিংস</h2>
-            <p class="text-xs sm:text-sm text-sky-100 leading-relaxed">
-              আপনার চাহিদা অনুযায়ী বিশেষভাবে <strong>'Narayanganj' (নারায়ণগঞ্জ)</strong> এবং <strong>'Outside Narayanganj' (নারায়ণগঞ্জের বাইরে / অন্যান্য জেলা)</strong> এর জন্য আলাদা ডেলিভারি চার্জ নির্ধারণ করুন।
-            </p>
-          </div>
+        <div class="space-y-6">
+          <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
+            <h2 class="text-lg font-bold text-slate-900 mb-1">ডেলিভারি ফি সেটিংস (Narayanganj & Outside Narayanganj)</h2>
+            <p class="text-xs text-slate-500 mb-6">নারায়ণগঞ্জ জেলা ও নারায়ণগঞ্জের বাইরে অন্যান্য ৬৩ জেলার জন্য আলাদা ডেলিভারি ফি নির্ধারণ করুন</p>
 
-          <form onsubmit="handleSaveDeliverySettings(event)" class="bg-white rounded-2xl border border-slate-200/80 p-6 sm:p-8 shadow-xs space-y-6">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              <!-- Narayanganj Fee -->
-              <div class="p-5 rounded-2xl bg-sky-50/50 border border-sky-100 space-y-3">
-                <div class="flex items-center gap-2 text-sky-800 font-bold text-sm">
-                  <i data-lucide="map-pin" class="w-4 h-4 text-sky-600"></i>
-                  <span>নারায়ণগঞ্জ এরিয়া (Narayanganj)</span>
+            <form onsubmit="handleSaveDeliverySettings(event)" class="space-y-6">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div class="p-5 bg-emerald-50/60 rounded-2xl border border-emerald-300">
+                  <span class="text-xs font-bold text-emerald-950 block mb-1">Narayanganj (নারায়ণগঞ্জ) ডেলিভারি ফি (৳)</span>
+                  <p class="text-[11px] text-slate-500 mb-3">নারায়ণগঞ্জ সদর, চাষাড়া, সিদ্ধিরগঞ্জ, ফতুল্লা, বন্দর ইত্যাদি</p>
+                  <input type="number" required name="fee-narayanganj" value="${d.narayanganjFee}" class="w-full px-3 py-2 bg-white border border-emerald-400 rounded-xl font-bold font-mono text-lg outline-none" />
                 </div>
-                <label class="block text-xs font-semibold text-slate-600">ডেলিভারি চার্জ (টাকা)</label>
-                <div class="relative">
-                  <span class="absolute left-3 top-2.5 font-bold text-slate-400 text-sm">৳</span>
-                  <input
-                    name="narayanganj-fee"
-                    type="number"
-                    required
-                    value="${d.narayanganjFee}"
-                    class="w-full pl-8 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-sky-500 focus:outline-none"
-                  />
+
+                <div class="p-5 bg-sky-50/60 rounded-2xl border border-sky-300">
+                  <span class="text-xs font-bold text-sky-950 block mb-1">Outside Narayanganj (নারায়ণগঞ্জের বাইরে) ডেলিভারি ফি (৳)</span>
+                  <p class="text-[11px] text-slate-500 mb-3">ঢাকা, চট্টগ্রাম, সিলেট ও অন্যান্য জেলা</p>
+                  <input type="number" required name="fee-outside" value="${d.outsideNarayanganjFee}" class="w-full px-3 py-2 bg-white border border-sky-400 rounded-xl font-bold font-mono text-lg outline-none" />
                 </div>
-                <p class="text-[11px] text-slate-500">নারায়ণগঞ্জ সিটি ও আশেপাশের জন্য নির্ধারিত চার্জ</p>
               </div>
 
-              <!-- Outside Narayanganj Fee -->
-              <div class="p-5 rounded-2xl bg-purple-50/50 border border-purple-100 space-y-3">
-                <div class="flex items-center gap-2 text-purple-800 font-bold text-sm">
-                  <i data-lucide="globe" class="w-4 h-4 text-purple-600"></i>
-                  <span>নারায়ণগঞ্জের বাইরে (Outside Narayanganj)</span>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label class="block text-xs font-bold text-slate-700 mb-1">ফ্রি ডেলিভারি নূন্যতম অর্ডারের পরিমাণ (৳)</label>
+                  <input type="number" name="fee-free-threshold" value="${d.freeDeliveryThreshold}" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm outline-none" />
                 </div>
-                <label class="block text-xs font-semibold text-slate-600">ডেলিভারি চার্জ (টাকা)</label>
-                <div class="relative">
-                  <span class="absolute left-3 top-2.5 font-bold text-slate-400 text-sm">৳</span>
-                  <input
-                    name="outside-fee"
-                    type="number"
-                    required
-                    value="${d.outsideNarayanganjFee}"
-                    class="w-full pl-8 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-purple-500 focus:outline-none"
-                  />
-                </div>
-                <p class="text-[11px] text-slate-500">ঢাকা, চট্টগ্রাম সহ অন্যান্য ৬৩টি জেলার জন্য নির্ধারিত চার্জ</p>
-              </div>
-            </div>
 
-            <!-- Free Delivery & COD -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-slate-100">
+                <div class="flex items-center gap-2 pt-6">
+                  <input type="checkbox" id="fee-cod" name="fee-cod" ${d.codAvailable ? 'checked' : ''} class="w-4 h-4 text-emerald-600 rounded cursor-pointer" />
+                  <label for="fee-cod" class="text-xs font-bold text-slate-800 cursor-pointer">ক্যাশ অন ডেলিভারি (COD) সক্রিয় রাখুন</label>
+                </div>
+              </div>
+
               <div>
-                <label class="block text-xs font-bold text-slate-700 mb-2">ফ্রি ডেলিভারি ন্যূনতম অর্ডার মূল্য (৳)</label>
-                <input
-                  name="free-threshold"
-                  type="number"
-                  value="${d.freeDeliveryThreshold}"
-                  class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-                <span class="text-[11px] text-slate-400">এই পরিমাণের বেশি অর্ডারে স্বয়ংক্রিয়ভাবে ডেলিভারি ফ্রি হবে (০ দিলে বন্ধ থাকবে)</span>
+                <label class="block text-xs font-bold text-slate-700 mb-1">ডেলিভারি নির্দেশিকা / পলিসি নোট</label>
+                <textarea rows="2" name="fee-notes" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none">${d.deliveryNotes || ''}</textarea>
               </div>
 
-              <div class="flex items-center gap-3 pt-6">
-                <input
-                  name="cod-available"
-                  id="cod-toggle"
-                  type="checkbox"
-                  ${d.codAvailable ? 'checked' : ''}
-                  class="w-5 h-5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300"
-                />
-                <label for="cod-toggle" class="text-xs font-bold text-slate-800 cursor-pointer">
-                  ক্যাশ অন ডেলিভারি (Cash on Delivery) সুবিধা সক্রিয় রাখুন
-                </label>
+              <div class="flex justify-end">
+                <button type="submit" class="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md cursor-pointer">
+                  ডেলিভারি ফি সংরক্ষণ করুন
+                </button>
               </div>
-            </div>
-
-            <div>
-              <label class="block text-xs font-bold text-slate-700 mb-2">ডেলিভারি পলিসি ও নোট</label>
-              <textarea
-                name="delivery-notes"
-                rows="3"
-                class="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:bg-white focus:outline-none"
-              >${d.deliveryNotes || ''}</textarea>
-            </div>
-
-            <button
-              type="submit"
-              class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/25 transition cursor-pointer"
-            >
-              ডেলিভারি সেটিংস সংরক্ষণ করুন
-            </button>
-          </form>
+            </form>
+          </div>
         </div>
       `;
     }
 
-    // Shop Profile & Site Content Tab
+    // --- SHOP & SITE CONTENT TAB ---
     function renderShopTab() {
-      const isContent = state.shopSubTab === 'site_content';
-      const info = state.shopInfo;
-      const content = state.siteContent;
+      const isContent = state.shopSubTab === "site_content";
+      const s = state.shopInfo;
+      const c = state.siteContent;
 
       return `
-        <div class="max-w-4xl mx-auto space-y-6">
-          <!-- SUB TAB SELECTOR -->
-          <div class="flex items-center gap-3 p-1.5 bg-slate-200/80 rounded-2xl w-fit">
-            <button
-              onclick="setShopSubTab('profile')"
-              class="px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                !isContent ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }"
-            >
-              দোকানের সাধারণ তথ্য ও লোগো
+        <div class="space-y-6">
+          <div class="flex items-center gap-2 p-1 bg-slate-100 rounded-xl w-fit">
+            <button onclick="setShopSubTab('profile')" class="px-4 py-2 rounded-lg text-xs font-bold cursor-pointer ${!isContent ? 'bg-white text-purple-700 shadow-xs' : 'text-slate-600'}">
+              শপ পরিচিতি ও লোগো
             </button>
-            <button
-              onclick="setShopSubTab('site_content')"
-              class="px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                isContent ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }"
-            >
+            <button onclick="setShopSubTab('site_content')" class="px-4 py-2 rounded-lg text-xs font-bold cursor-pointer ${isContent ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600'}">
               সাইট কনটেন্ট ও ফিচার কন্ট্রোল
             </button>
           </div>
 
           ${!isContent ? `
-            <!-- SHOP INFO & LOGO -->
-            <form onsubmit="handleSaveShopInfo(event)" class="bg-white rounded-2xl border border-slate-200/80 p-6 sm:p-8 shadow-xs space-y-5">
-              <h3 class="font-bold text-slate-800 text-sm border-b pb-3">দোকানের প্রাথমিক পরিচিতি ও ব্র্যান্ডিং</h3>
+            <!-- SHOP PROFILE & LOGO FORM -->
+            <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
+              <h2 class="text-lg font-bold text-slate-900 mb-1">শপ ইনফরমেশন ও লোগো সেটিংস</h2>
+              <p class="text-xs text-slate-500 mb-6">দোকানের নাম, স্টোর লোগো (গ্যালারি থেকে আপলোড বা Base64), যোগাযোগ ও সোশ্যাল লিংক</p>
 
-              <!-- LOGO UPLOAD -->
-              <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col sm:flex-row items-center gap-5">
-                <div class="w-20 h-20 rounded-2xl bg-white border border-slate-300 flex items-center justify-center overflow-hidden shrink-0">
-                  ${info.logoUrl ? `<img src="${info.logoUrl}" class="w-full h-full object-contain" />` : `<span class="text-slate-400 font-bold text-xs">লোগো নেই</span>`}
-                </div>
-                <div class="flex-1 w-full space-y-2">
-                  <label class="block text-xs font-bold text-slate-700">দোকানের অফিসিয়াল লোগো আপলোড</label>
-                  <input
-                    type="file"
-                    name="shop-logo-file"
-                    accept="image/*"
-                    class="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100"
-                  />
-                  <input
-                    type="text"
-                    name="shop-logo-url"
-                    value="${info.logoUrl || ''}"
-                    placeholder="অথবা অনলাইন লোগো লিংক (URL)..."
-                    class="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
-                  />
-                </div>
-              </div>
-
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">দোকানের নাম</label>
-                  <input name="store-name" required value="${info.storeName || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">ট্যাগলাইন</label>
-                  <input name="store-tagline" value="${info.tagline || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-              </div>
-
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">ফোন নম্বর</label>
-                  <input name="store-phone" value="${info.phone || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">হোয়াটসঅ্যাপ নম্বর</label>
-                  <input name="store-whatsapp" value="${info.whatsapp || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">অফিসিয়াল ইমেইল</label>
-                  <input name="store-email" value="${info.email || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-xs font-bold text-slate-700 mb-1">দোকানের ঠিকানা</label>
-                <input name="store-address" value="${info.address || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-              </div>
-
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">ফেসবুক পেজ লিংক</label>
-                  <input name="store-fb" value="${info.facebookPage || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-                <div>
-                  <label class="block text-xs font-bold text-slate-700 mb-1">ইনস্টাগ্রাম লিংক</label>
-                  <input name="store-insta" value="${info.instagram || ''}" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 focus:bg-white" />
-                </div>
-              </div>
-
-              <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition">
-                শপ তথ্য সংরক্ষণ করুন
-              </button>
-            </form>
-          ` : `
-            <!-- SITE CONTENT & FEATURES -->
-            <form onsubmit="handleSaveSiteContent(event)" class="bg-white rounded-2xl border border-slate-200/80 p-6 sm:p-8 shadow-xs space-y-6">
-              <h3 class="font-bold text-slate-800 text-sm border-b pb-3">হেডার ও ফিচার টেক্সট কন্ট্রোল</h3>
-
-              <!-- Top Bar Notice -->
-              <div class="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100 space-y-3">
-                <div class="flex items-center justify-between">
-                  <label class="text-xs font-bold text-slate-800">হেডার টপ বার নোটিশ / ঘোষণা</label>
-                  <div class="flex items-center gap-2">
-                    <input type="checkbox" name="top-bar-active" id="t-active" ${content.isTopBarActive ? 'checked' : ''} class="rounded text-emerald-600" />
-                    <label for="t-active" class="text-xs text-slate-600">নোটিশ বার চালু রাখুন</label>
+              <form onsubmit="handleSaveShopInfo(event)" class="space-y-5">
+                <!-- Store Logo Upload -->
+                <div class="p-4 bg-purple-50/50 rounded-2xl border border-purple-200 flex flex-col sm:flex-row items-center gap-4">
+                  <div class="w-20 h-20 bg-white border border-purple-200 rounded-xl p-1 flex items-center justify-center overflow-hidden shrink-0">
+                    ${s.logoUrl ? `<img src="${s.logoUrl}" alt="Logo" class="w-full h-full object-contain" />` : `<span class="text-slate-300 text-xs">লোগো নেই</span>`}
+                  </div>
+                  <div class="flex-1 w-full space-y-2">
+                    <label class="block text-xs font-bold text-purple-900">স্টোর লোগো পরিবর্তন (গ্যালারি থেকে ফাইল নির্বাচন)</label>
+                    <input type="file" accept="image/*" name="shop-logo-file" class="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white cursor-pointer" />
+                    <input type="url" name="shop-logo-url" value="${s.logoUrl || ''}" placeholder="অথবা লোগো ইমেজ লিঙ্ক দিন..." class="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg outline-none font-mono" />
                   </div>
                 </div>
-                <input name="top-bar-text" value="${content.topBarAnnouncement || ''}" class="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs" />
-                <div>
-                  <label class="text-[11px] font-bold text-slate-600">টপ বার সাপোর্ট হেল্পলাইন ফোন</label>
-                  <input name="support-phone" value="${content.supportPhone || ''}" class="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs mt-1" />
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">স্টোর / শপের নাম *</label>
+                    <input type="text" required name="shop-name" value="${s.storeName}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ট্যাগলাইন / ব্র্যান্ড স্লোগান</label>
+                    <input type="text" name="shop-tagline" value="${s.tagline}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
+                  </div>
                 </div>
-              </div>
 
-              <!-- Why Shop With Us -->
-              <div class="space-y-3">
-                <label class="block text-xs font-bold text-slate-800">'কেন আমাদের থেকে কিনবেন?' সেকশন</label>
-                <input name="why-us-title" value="${content.whyUsTitle || ''}" placeholder="শিরোনাম..." class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50" />
-                <textarea name="why-us-desc" rows="2" placeholder="বর্ণনা..." class="w-full p-3 border rounded-xl text-xs bg-slate-50">${content.whyUsDescription || ''}</textarea>
-              </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ফোন নম্বর *</label>
+                    <input type="tel" required name="shop-phone" value="${s.phone}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono outline-none" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">হোয়াটসঅ্যাপ নম্বর</label>
+                    <input type="tel" name="shop-whatsapp" value="${s.whatsapp}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono outline-none" />
+                  </div>
+                </div>
 
-              <!-- Footer Details -->
-              <div class="space-y-3 pt-3 border-t">
-                <label class="block text-xs font-bold text-slate-800">ফুটার বায়ো ও কপিরাইট</label>
-                <input name="footer-tagline" value="${content.footerTagline || ''}" placeholder="ফুটার ট্যাগলাইন..." class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 mb-2" />
-                <textarea name="shop-bio" rows="2" placeholder="দোকানের ছোট বিবরণী..." class="w-full p-3 border rounded-xl text-xs bg-slate-50 mb-2">${content.shopBio || ''}</textarea>
-                <input name="copyright-text" value="${content.copyrightText || ''}" placeholder="কপিরাইট..." class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50" />
-              </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">অফিসিয়াল ইমেইল</label>
+                    <input type="email" name="shop-email" value="${s.email}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono outline-none" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">দোকানের সম্পূর্ণ ঠিকানা</label>
+                    <input type="text" name="shop-address" value="${s.address}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
+                  </div>
+                </div>
 
-              <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition">
-                সাইট কনটেন্ট আপডেট করুন
-              </button>
-            </form>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ফেসবুক পেজ লিঙ্ক</label>
+                    <input type="url" name="shop-fb" value="${s.facebookPage}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono text-blue-700 outline-none" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ইনস্টাগ্রাম লিঙ্ক</label>
+                    <input type="url" name="shop-insta" value="${s.instagram || ''}" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono text-purple-700 outline-none" />
+                  </div>
+                </div>
+
+                <div class="flex justify-end">
+                  <button type="submit" class="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-md cursor-pointer">
+                    শপের তথ্য সেভ করুন
+                  </button>
+                </div>
+              </form>
+            </div>
+          ` : `
+            <!-- SITE CONTENT & FEATURES CONTROL FORM -->
+            <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
+              <h2 class="text-lg font-bold text-slate-900 mb-1">সাইট কনটেন্ট ও ফিচার কন্ট্রোল</h2>
+              <p class="text-xs text-slate-500 mb-6">হেডার নোটিশ, ফিচার ব্যাজ, 'কেন আমাদের থেকে কিনবেন' ও ফুটার টেক্সট নিয়ন্ত্রণ করুন</p>
+
+              <form onsubmit="handleSaveSiteContent(event)" class="space-y-6">
+                <!-- 1. Header announcement & Helpline -->
+                <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-slate-800">১. হেডার এনাউন্সমেন্ট বার ও হেল্পলাইন</span>
+                    <label class="inline-flex items-center gap-1.5 cursor-pointer text-xs">
+                      <input type="checkbox" name="site-topbar-active" ${c.isTopBarActive ? 'checked' : ''} class="w-4 h-4 text-emerald-600 rounded" />
+                      <span>টপ বার চালু রাখুন</span>
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="md:col-span-2">
+                      <input type="text" name="site-topbar-text" value="${c.topBarAnnouncement}" placeholder="নোটিশ টেক্সট..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none" />
+                    </div>
+                    <div>
+                      <input type="tel" name="site-support-phone" value="${c.supportPhone}" placeholder="হেল্পলাইন..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-mono outline-none" />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 2. Why Shop With Us -->
+                <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                  <span class="text-xs font-bold text-slate-800 block">২. 'কেন আমাদের থেকে কেনাকাটা করবেন?' সেকশন</span>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input type="text" name="site-why-title" value="${c.whyUsTitle}" placeholder="সেকশন শিরোনাম..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-bold outline-none" />
+                    <input type="text" name="site-why-desc" value="${c.whyUsDescription}" placeholder="ভূমিকা..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none" />
+                  </div>
+                </div>
+
+                <!-- 3. Footer Tagline & Shop Bio -->
+                <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                  <span class="text-xs font-bold text-slate-800 block">৩. ফুটার ট্যাগলাইন ও শপ বায়ো</span>
+                  <input type="text" name="site-footer-tagline" value="${c.footerTagline}" placeholder="ফুটার স্লোগান..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-semibold outline-none" />
+                  <textarea rows="3" name="site-shop-bio" class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none">${c.shopBio}</textarea>
+                  <input type="text" name="site-copyright" value="${c.copyrightText || ''}" placeholder="কপিরাইট..." class="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-mono outline-none" />
+                </div>
+
+                <div class="flex justify-end">
+                  <button type="submit" class="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-md cursor-pointer">
+                    সাইট কনটেন্ট সংরক্ষণ করুন
+                  </button>
+                </div>
+              </form>
+            </div>
           `}
         </div>
       `;
     }
 
-    // Banners Tab
-    function renderBannersTab() {
-      return `
-        <div class="space-y-6">
-          <div class="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
-            <div>
-              <h3 class="font-bold text-slate-800 text-sm">হোমপেজ ব্যানার ও প্রোমো কন্ট্রোল</h3>
-              <p class="text-xs text-slate-500">মোট ব্যানার: ${state.banners.length} টি</p>
-            </div>
-            <button onclick="openModal('addBanner')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow">
-              <i data-lucide="plus" class="w-4 h-4"></i> নতুন ব্যানার
-            </button>
-          </div>
-
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            ${state.banners.map(b => `
-              <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs flex flex-col justify-between">
-                <div class="h-40 bg-slate-100 relative">
-                  <img src="${b.imageUrl}" class="w-full h-full object-cover" />
-                  <span class="absolute top-3 left-3 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-900/80 text-white backdrop-blur">
-                    ${b.badgeText || 'অফার'}
-                  </span>
-                </div>
-                <div class="p-4 flex items-center justify-between">
-                  <div>
-                    <h4 class="font-bold text-slate-800 text-sm">${b.title}</h4>
-                    <p class="text-xs text-slate-500">${b.subtitle || ''}</p>
-                  </div>
-                  <button onclick="deleteDoc(doc(db, 'banners', '${b.id}')); showToast('ব্যানার মুছে ফেলা হয়েছে');" class="text-rose-600 p-2 hover:bg-rose-50 rounded-lg">
-                    <i data-lucide="trash-2" class="w-4 h-4"></i>
-                  </button>
-                </div>
-              </div>
-            `).join('')}
-          </div>
-          ${!state.banners.length ? `<div class="p-12 text-center text-slate-400 text-xs">কোনো ব্যানার নেই। 'নতুন ব্যানার' বাটনে ক্লিক করে হিরো ব্যানার যুক্ত করুন।</div>` : ''}
-        </div>
-      `;
-    }
-
     // -------------------------------------------------------------
-    // 10. MODALS RENDERER
+    // 10. MODAL DIALOGS RENDERER
     // -------------------------------------------------------------
     function renderActiveModal() {
       if (!state.activeModal) return '';
 
-      // Product Modal (Add / Edit)
+      // ADD / EDIT PRODUCT MODAL
       if (state.activeModal === 'addProduct' || state.activeModal === 'editProduct') {
         const isEdit = state.activeModal === 'editProduct';
         const p = state.selectedItem || {};
+
         return `
-          <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div class="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 max-h-[90vh] overflow-y-auto shadow-2xl space-y-4">
-              <div class="flex items-center justify-between border-b pb-3">
-                <h3 class="font-bold text-slate-900 text-base">${isEdit ? 'পণ্য এডিট করুন' : 'নতুন পণ্য যোগ করুন'}</h3>
-                <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600">✕</button>
+          <div class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+            <div class="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-100 my-8 animate-in fade-in">
+              <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                <h3 class="font-bold text-slate-900 text-base">${isEdit ? 'পণ্য সংশোধন (Edit Product)' : 'নতুন পণ্য যুক্ত করুন (Add Product)'}</h3>
+                <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-lg">✕</button>
               </div>
 
-              <form onsubmit="handleSaveProduct(event)" class="space-y-4 text-xs">
+              <form onsubmit="handleSaveProduct(event)" class="space-y-4">
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">পণ্যের নাম *</label>
-                  <input name="product-name" required value="${p.name || ''}" placeholder="যেমন: খাঁটি সুন্দরবনের মধু..." class="w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">পণ্যের নাম *</label>
+                  <input type="text" required name="product-name" value="${p.name || ''}" placeholder="যেমন: বিশুদ্ধ কালোজিরা তেল..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">ক্যাটাগরি</label>
-                    <select name="product-cat" class="w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white">
-                      ${state.categories.map(c => `
-                        <option value="${c.name}" ${p.category === c.name ? 'selected' : ''}>${c.name}</option>
-                      `).join('')}
-                      <option value="সাধারণ" ${!p.category ? 'selected' : ''}>সাধারণ</option>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ক্যাটাগরি</label>
+                    <select name="product-cat" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-medium">
+                      ${state.categories.map(c => `<option value="${c.name}" ${p.category === c.name ? 'selected' : ''}>${c.name}</option>`).join('')}
+                      ${state.categories.length === 0 ? '<option value="ভেষজ ও রূপচর্চা">ভেষজ ও রূপচর্চা</option>' : ''}
                     </select>
                   </div>
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">স্টক স্ট্যাটাস</label>
-                    <select name="product-stock" class="w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white">
-                      <option value="in_stock" ${p.stockStatus !== 'out_of_stock' ? 'selected' : ''}>স্টকে আছে (In Stock)</option>
-                      <option value="out_of_stock" ${p.stockStatus === 'out_of_stock' ? 'selected' : ''}>স্টক শেষ (Out of Stock)</option>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">স্টক অবস্থা</label>
+                    <select name="product-stock" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-medium">
+                      <option value="in_stock" ${p.stockStatus === 'in_stock' ? 'selected' : ''}>ইন স্টক</option>
+                      <option value="limited_stock" ${p.stockStatus === 'limited_stock' ? 'selected' : ''}>সীমিত স্টক</option>
+                      <option value="out_of_stock" ${p.stockStatus === 'out_of_stock' ? 'selected' : ''}>স্টক আউট</option>
                     </select>
                   </div>
                 </div>
 
                 <div class="grid grid-cols-3 gap-3">
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">বিক্রয় মূল্য (৳) *</label>
-                    <input name="product-price" type="number" required value="${p.price || ''}" placeholder="৳" class="w-full px-3 py-2.5 border rounded-xl font-bold" />
+                    <label class="block text-xs font-bold text-slate-700 mb-1">বিক্রয় মূল্য (৳) *</label>
+                    <input type="number" required min="0" name="product-price" value="${p.price || ''}" placeholder="৪৫০" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-emerald-700" />
                   </div>
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">পূর্বের মূল্য (৳)</label>
-                    <input name="product-regular-price" type="number" value="${p.regularPrice || ''}" placeholder="৳" class="w-full px-3 py-2.5 border rounded-xl" />
+                    <label class="block text-xs font-bold text-slate-700 mb-1">রেগুলার মূল্য (৳)</label>
+                    <input type="number" min="0" name="product-regular-price" value="${p.regularPrice || ''}" placeholder="৫৫০" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                   </div>
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">বিশেষ ডেলিভারি ফি</label>
-                    <input name="product-special-fee" type="number" value="${p.specialDeliveryFee || 0}" placeholder="৳" class="w-full px-3 py-2.5 border rounded-xl" />
+                    <label class="block text-xs font-bold text-slate-700 mb-1">বিশেষ ডেলিভারি ফি (৳)</label>
+                    <input type="number" min="0" name="product-special-fee" value="${p.specialDeliveryFee || 0}" placeholder="০" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-amber-800" />
                   </div>
-                </div>
-
-                <!-- Product Image Upload -->
-                <div class="p-3 bg-slate-50 rounded-xl border space-y-2">
-                  <label class="block font-bold text-slate-700">ডিভাইস / গ্যালারি থেকে ছবি আপলোড</label>
-                  <input type="file" name="product-image-file" accept="image/*" class="w-full text-xs" />
-                  <input type="text" name="product-image-url" value="${p.imageUrl || ''}" placeholder="অথবা ছবির ওয়েব লিংক..." class="w-full px-3 py-2 border rounded-xl bg-white" />
                 </div>
 
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">পণ্যের বিবরণ</label>
-                  <textarea name="product-desc" rows="3" class="w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none">${p.description || ''}</textarea>
+                  <label class="block text-xs font-bold text-slate-700 mb-1">পণ্যের বিবরণ</label>
+                  <textarea rows="2" name="product-desc" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none">${p.description || ''}</textarea>
                 </div>
 
-                <div class="flex items-center justify-end gap-3 pt-3 border-t">
-                  <button type="button" onclick="closeModal()" class="px-4 py-2 border rounded-xl text-slate-600 font-semibold">বাতিল</button>
-                  <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md">
-                    ${isEdit ? 'আপডেট করুন' : 'পণ্য যোগ করুন'}
-                  </button>
+                <!-- Gallery Image Upload & Direct URL -->
+                <div class="p-3 bg-slate-50 rounded-xl border border-dashed border-slate-300 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <label class="block text-xs font-bold text-slate-700">পণ্যের ছবি (গ্যালারি / ডিভাইস থেকে আপলোড অথবা সরাসরি লিঙ্ক)</label>
+                    <span class="text-[10px] text-emerald-700 font-semibold">লাইভ ইমেজ প্রিভিউ</span>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <div class="w-14 h-14 rounded-lg bg-white border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center">
+                      <img id="product-modal-preview" src="${p.imageUrl || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=300'}" class="w-full h-full object-cover" />
+                    </div>
+                    <div class="flex-1 space-y-1.5">
+                      <input type="file" accept="image/*" name="product-image-file" onchange="if(this.files[0]){const r=new FileReader();r.onload=e=>document.getElementById('product-modal-preview').src=e.target.result;r.readAsDataURL(this.files[0]);document.getElementsByName('product-image-url')[0].value='';}" class="block w-full text-xs text-slate-500 file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:bg-emerald-600 file:text-white cursor-pointer" />
+                      <input type="text" name="product-image-url" value="${p.imageUrl || ''}" oninput="document.getElementById('product-modal-preview').src=this.value;" placeholder="অথবা সরাসরি ছবির লিঙ্ক পেস্ট করুন (যেমন: https://...)" class="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg outline-none font-mono focus:border-emerald-500" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                  <button type="button" onclick="closeModal()" class="px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold cursor-pointer">বাতিল</button>
+                  <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer">সংরক্ষণ করুন</button>
                 </div>
               </form>
             </div>
@@ -1766,29 +1793,24 @@
         `;
       }
 
-      // Category Modal
-      if (state.activeModal === 'addCategory' || state.activeModal === 'editCategory') {
-        const isEdit = state.activeModal === 'editCategory';
-        const c = state.selectedItem || {};
+      // ADD CATEGORY MODAL
+      if (state.activeModal === 'addCategory') {
         return `
-          <div class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div class="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-              <div class="flex items-center justify-between border-b pb-3">
-                <h3 class="font-bold text-slate-900 text-sm">${isEdit ? 'ক্যাটাগরি এডিট' : 'নতুন ক্যাটাগরি'}</h3>
-                <button onclick="closeModal()">✕</button>
-              </div>
-              <form onsubmit="handleSaveCategory(event)" class="space-y-4 text-xs">
+          <div class="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100">
+              <h3 class="font-bold text-slate-900 text-base mb-3">নতুন ক্যাটাগরি তৈরি করুন</h3>
+              <form onsubmit="handleSaveCategory(event)" class="space-y-4">
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">ক্যাটাগরির নাম *</label>
-                  <input name="cat-name" required value="${c.name || ''}" placeholder="যেমন: ভেষজ ও রূপচর্চা..." class="w-full px-3 py-2 border rounded-xl" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">ক্যাটাগরির নাম *</label>
+                  <input type="text" required name="cat-name" placeholder="যেমন: ভেষজ ও রূপচর্চা" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                 </div>
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">বিবরণ</label>
-                  <textarea name="cat-desc" rows="2" class="w-full p-2 border rounded-xl">${c.description || ''}</textarea>
+                  <label class="block text-xs font-bold text-slate-700 mb-1">বিবরণ</label>
+                  <input type="text" name="cat-desc" placeholder="সংক্ষিপ্ত বিবরণ..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
-                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl">বাতিল</button>
-                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl">সেভ করুন</button>
+                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">বাতিল</button>
+                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl text-xs cursor-pointer">তৈরি করুন</button>
                 </div>
               </form>
             </div>
@@ -1796,40 +1818,37 @@
         `;
       }
 
-      // Coupon Modal
+      // ADD COUPON MODAL
       if (state.activeModal === 'addCoupon') {
         return `
-          <div class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div class="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-              <div class="flex items-center justify-between border-b pb-3">
-                <h3 class="font-bold text-slate-900 text-sm">নতুন প্রোমো কোড তৈরি করুন</h3>
-                <button onclick="closeModal()">✕</button>
-              </div>
-              <form onsubmit="handleSaveCoupon(event)" class="space-y-4 text-xs">
+          <div class="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100">
+              <h3 class="font-bold text-slate-900 text-base mb-3">নতুন প্রোমো কোড / কুপন</h3>
+              <form onsubmit="handleSaveCoupon(event)" class="space-y-4">
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">কুপন কোড (যেমন: TAJ10, EID2026) *</label>
-                  <input name="coupon-code" required placeholder="TAJ10" class="w-full px-3 py-2 border rounded-xl uppercase font-mono font-bold" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">কুপন কোড *</label>
+                  <input type="text" required name="coupon-code" placeholder="যেমন: TAJ10 বা EID2026" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-mono uppercase font-bold outline-none" />
                 </div>
-                <div class="grid grid-cols-2 gap-2">
+                <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">ডিসকাউন্ট টাইপ</label>
-                    <select name="coupon-type" class="w-full px-2 py-2 border rounded-xl bg-white">
+                    <label class="block text-xs font-bold text-slate-700 mb-1">টাইপ</label>
+                    <select name="coupon-type" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none">
                       <option value="percentage">শতাংশ (%)</option>
-                      <option value="flat">ফ্ল্যাট টাকা (৳)</option>
+                      <option value="flat">ফ্ল্যাট (৳)</option>
                     </select>
                   </div>
                   <div>
-                    <label class="block font-bold text-slate-700 mb-1">ছাড়ের পরিমাণ *</label>
-                    <input name="coupon-amount" type="number" required placeholder="১০ বা ১০০" class="w-full px-3 py-2 border rounded-xl font-bold" />
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ছাড় পরিমাণ *</label>
+                    <input type="number" required min="1" name="coupon-amount" placeholder="১০" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" />
                   </div>
                 </div>
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">ন্যূনতম অর্ডার মূল্য (ঐচ্ছিক)</label>
-                  <input name="coupon-min-order" type="number" placeholder="৳" class="w-full px-3 py-2 border rounded-xl" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">নূন্যতম অর্ডার (৳)</label>
+                  <input type="number" min="0" name="coupon-min" placeholder="৫০০ (ঐচ্ছিক)" class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
-                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl">বাতিল</button>
-                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl">কুপন চালু করুন</button>
+                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">বাতিল</button>
+                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl text-xs cursor-pointer">কুপন সেভ করুন</button>
                 </div>
               </form>
             </div>
@@ -1837,45 +1856,33 @@
         `;
       }
 
-      // Banner Modal
+      // ADD BANNER MODAL
       if (state.activeModal === 'addBanner') {
         return `
-          <div class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div class="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-              <div class="flex items-center justify-between border-b pb-3">
-                <h3 class="font-bold text-slate-900 text-sm">নতুন ব্যানার যোগ করুন</h3>
-                <button onclick="closeModal()">✕</button>
-              </div>
-              <form onsubmit="
-                event.preventDefault();
-                const form = event.target;
-                addDoc(collection(db, 'banners'), {
-                  title: form.elements['b-title'].value,
-                  subtitle: form.elements['b-sub'].value,
-                  badgeText: form.elements['b-badge'].value,
-                  imageUrl: form.elements['b-img'].value || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=800',
-                  createdAt: new Date().toISOString()
-                }).then(() => { closeModal(); showToast('ব্যানার যুক্ত হয়েছে'); });
-              " class="space-y-3 text-xs">
+          <div class="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100">
+              <h3 class="font-bold text-slate-900 text-base mb-3">নতুন ব্যানার যোগ করুন</h3>
+              <form onsubmit="handleSaveBanner(event)" class="space-y-4">
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">ব্যানার শিরোনাম *</label>
-                  <input name="b-title" required placeholder="ঈদ স্পেশাল অফার" class="w-full px-3 py-2 border rounded-xl" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">ব্যানার শিরোনাম *</label>
+                  <input type="text" required name="banner-title" placeholder="যেমন: অর্গানিক পণ্যে বিশেষ ছাড়..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold" />
                 </div>
                 <div>
-                  <label class="block font-bold text-slate-700 mb-1">সাবটাইটেল</label>
-                  <input name="b-sub" placeholder="সকল ভেষজ পণ্যে ২০% ছাড়" class="w-full px-3 py-2 border rounded-xl" />
+                  <label class="block text-xs font-bold text-slate-700 mb-1">সাবটাইটেল</label>
+                  <input type="text" name="banner-subtitle" placeholder="১০০% খাঁটি পণ্য..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
                 </div>
-                <div>
-                  <label class="block font-bold text-slate-700 mb-1">ব্যাজ টেক্সট</label>
-                  <input name="b-badge" value="ধামাকা অফার" class="w-full px-3 py-2 border rounded-xl" />
+                <div class="grid grid-cols-2 gap-2">
+                  <input type="text" name="banner-badge" placeholder="অফার ব্যাজ..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none" />
+                  <input type="text" name="banner-link" placeholder="ক্লিক লিঙ্ক..." class="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono" />
                 </div>
-                <div>
-                  <label class="block font-bold text-slate-700 mb-1">ছবির URL</label>
-                  <input name="b-img" placeholder="https://..." class="w-full px-3 py-2 border rounded-xl" />
+                <div class="space-y-2">
+                  <label class="block text-xs font-bold text-slate-700">ব্যানার ছবি</label>
+                  <input type="file" accept="image/*" name="banner-file" class="block w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-emerald-600 file:text-white" />
+                  <input type="url" name="banner-url" placeholder="অথবা ইমেজ URL..." class="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg outline-none" />
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
-                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl">বাতিল</button>
-                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl">সেভ করুন</button>
+                  <button type="button" onclick="closeModal()" class="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">বাতিল</button>
+                  <button type="submit" class="px-4 py-1.5 bg-emerald-600 text-white font-bold rounded-xl text-xs cursor-pointer">ব্যানার সেভ</button>
                 </div>
               </form>
             </div>
@@ -1883,76 +1890,83 @@
         `;
       }
 
-      // Printable Order Invoice Modal
+      // ORDER INVOICE MODAL
       if (state.activeModal === 'orderInvoice') {
-        const ord = state.selectedItem || {};
+        const o = state.selectedItem || {};
         return `
-          <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div id="invoice-modal-content" class="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
-              <!-- Invoice Header -->
-              <div class="flex items-center justify-between border-b pb-4">
-                <div>
-                  <h2 class="text-xl font-black text-slate-900">${state.shopInfo.storeName || 'Taj Cares'}</h2>
-                  <p class="text-xs text-slate-500">${state.shopInfo.address || 'নারায়ণগঞ্জ, বাংলাদেশ'}</p>
-                  <p class="text-xs text-slate-500">ফোন: ${state.shopInfo.phone || '01712-345678'}</p>
-                </div>
-                <div class="text-right">
-                  <span class="px-3 py-1 bg-slate-900 text-white rounded-full text-xs font-mono font-bold">ক্যাশ মেমো</span>
-                  <div class="text-xs text-slate-500 mt-2">অর্ডার নং: #${ord.orderNumber || ord.id?.slice(0, 8)}</div>
-                  <div class="text-xs text-slate-400">${new Date().toLocaleDateString('bn-BD')}</div>
+          <div class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+            <div id="invoice-modal-content" class="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 my-8">
+              <div class="flex items-center justify-between pb-4 border-b border-slate-100 mb-6 no-print">
+                <span class="font-bold text-slate-900 text-sm">ইনভয়েস রসিদ: ${o.orderNumber || (o.id ? (o.id.startsWith('#') ? o.id : '#' + o.id.slice(0, 8)) : '#অর্ডার')}</span>
+                <div class="flex gap-2">
+                  <button onclick="window.print()" class="px-3 py-1.5 bg-slate-900 text-white rounded-xl text-xs font-bold cursor-pointer">প্রিন্ট / সেভ</button>
+                  <button onclick="closeModal()" class="p-1.5 text-slate-400 hover:text-slate-600 text-base">✕</button>
                 </div>
               </div>
 
-              <!-- Customer Details -->
-              <div class="bg-slate-50 p-4 rounded-2xl text-xs space-y-1">
-                <div class="font-bold text-slate-800">কাস্টমার তথ্য:</div>
-                <div><strong>নাম:</strong> ${ord.customerName || 'গ্রাহক'}</div>
-                <div><strong>মোবাইল:</strong> ${ord.customerPhone || 'N/A'}</div>
-                <div><strong>ডেলিভারি ঠিকানা:</strong> ${ord.address || 'N/A'}</div>
-                <div><strong>এরিয়া:</strong> ${ord.deliveryZone === 'narayanganj' ? 'নারায়ণগঞ্জ' : 'নারায়ণগঞ্জের বাইরে'}</div>
-              </div>
-
-              <!-- Itemized Table -->
-              <table class="w-full text-xs">
-                <thead class="border-b text-slate-500 font-bold">
-                  <tr>
-                    <th class="text-left py-2">আইটেম</th>
-                    <th class="text-center py-2">পরিমাণ</th>
-                    <th class="text-right py-2">মূল্য</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  ${(ord.items || []).map(it => `
-                    <tr>
-                      <td class="py-2.5 font-medium text-slate-800">${it.name}</td>
-                      <td class="py-2.5 text-center">${it.quantity}</td>
-                      <td class="py-2.5 text-right font-bold">${formatBDT(it.price * it.quantity)}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-
-              <!-- Total Breakdown -->
-              <div class="border-t pt-3 space-y-1 text-xs">
-                <div class="flex justify-between text-slate-600">
-                  <span>সাবটোটাল</span>
-                  <span class="font-bold">${formatBDT(ord.subtotal || 0)}</span>
+              <!-- Printable Invoice Content -->
+              <div class="space-y-5">
+                <div class="flex items-start justify-between border-b pb-4 border-slate-200 gap-3">
+                  <div class="flex items-start gap-3 min-w-0">
+                    ${state.shopInfo.logoUrl ? `
+                      <img src="${state.shopInfo.logoUrl}" alt="${state.shopInfo.storeName || 'Store Logo'}" class="w-12 h-12 rounded-xl object-contain border border-slate-200 bg-white p-1 shrink-0" />
+                    ` : `
+                      <div class="w-12 h-12 rounded-xl bg-emerald-600 text-white font-black text-lg flex items-center justify-center shrink-0">
+                        ${(state.shopInfo.storeName || 'TC').slice(0, 2).toUpperCase()}
+                      </div>
+                    `}
+                    <div class="min-w-0">
+                      <h2 class="text-xl font-black text-slate-900 leading-tight">${state.shopInfo.storeName || 'Taj Cares'}</h2>
+                      ${state.shopInfo.tagline ? `<p class="text-xs text-emerald-700 font-semibold mt-0.5">${state.shopInfo.tagline}</p>` : ''}
+                      <p class="text-[11px] text-slate-500 mt-0.5">${state.shopInfo.address || 'নারায়ণগঞ্জ, বাংলাদেশ'}</p>
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 mt-0.5">
+                        ${state.shopInfo.phone ? `<span>ফোন: <b class="font-mono text-slate-700">${state.shopInfo.phone}</b></span>` : ''}
+                        ${state.shopInfo.whatsapp && state.shopInfo.whatsapp !== state.shopInfo.phone ? `<span>হোয়াটসঅ্যাপ: <b class="font-mono text-slate-700">${state.shopInfo.whatsapp}</b></span>` : ''}
+                        ${state.shopInfo.email ? `<span>ইমেইল: <span class="text-slate-700">${state.shopInfo.email}</span></span>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="text-right shrink-0">
+                    <span class="px-2.5 py-1 rounded-full bg-slate-100 font-bold text-xs uppercase border border-slate-200">ইনভয়েস বিল</span>
+                    <div class="text-xs font-mono text-slate-500 mt-1">তারিখ: ${window.formatOrderDate(o.createdAt)}</div>
+                  </div>
                 </div>
-                <div class="flex justify-between text-slate-600">
-                  <span>ডেলিভারি চার্জ (${ord.deliveryZone === 'narayanganj' ? 'নারায়ণগঞ্জ' : 'বাইরে'})</span>
-                  <span class="font-bold">${formatBDT(ord.deliveryFee || 0)}</span>
-                </div>
-                <div class="flex justify-between text-base font-black text-slate-900 border-t pt-2 mt-2">
-                  <span>সর্বমোট প্রদেয়</span>
-                  <span>${formatBDT(ord.totalAmount || 0)}</span>
-                </div>
-              </div>
 
-              <div class="no-print flex items-center justify-end gap-3 pt-4 border-t">
-                <button onclick="closeModal()" class="px-4 py-2 border rounded-xl text-xs font-bold text-slate-600">বন্ধ করুন</button>
-                <button onclick="window.print()" class="px-5 py-2 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-md">
-                  <i data-lucide="printer" class="w-4 h-4"></i> প্রিন্ট ইনভয়েস
-                </button>
+                <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs space-y-1">
+                  <div class="font-bold text-slate-900 text-sm">${o.customerName || 'সম্মানিত গ্রাহক'}</div>
+                  <div class="font-mono text-emerald-700">${o.customerPhone && o.customerPhone !== 'ফোন নম্বর নেই' ? o.customerPhone : 'ফোন নম্বর উল্লেখ নেই'}</div>
+                  <div class="text-slate-600">${o.customerAddress || 'ঠিকানা দেওয়া হয়নি'} (${o.customerDistrict || (o.deliveryZone === 'narayanganj' ? 'নারায়ণগঞ্জ' : 'অন্যান্য এলাকা')})</div>
+                  ${o.orderNote ? `<div class="text-amber-800 bg-amber-50 p-1.5 rounded mt-1 font-medium">নোট: ${o.orderNote}</div>` : ''}
+                </div>
+
+                <table class="w-full text-xs">
+                  <thead class="border-b border-slate-200 text-slate-500 font-bold">
+                    <tr><th class="py-1.5 text-left">পণ্য</th><th class="py-1.5 text-center">পরিমাণ</th><th class="py-1.5 text-right">একক</th><th class="py-1.5 text-right">মোট</th></tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    ${(o.items || []).map(it => `
+                      <tr>
+                        <td class="py-2 text-slate-800 font-medium">
+                          ${it.productName || it.name || 'পণ্য'}
+                          ${it.specialFee && it.specialFee > 0 ? `<span class="text-[10px] text-amber-700 block">+ বিশেষ ফি ${formatBDT(it.specialFee)}</span>` : ''}
+                        </td>
+                        <td class="py-2 text-center font-mono">${it.quantity || 1}</td>
+                        <td class="py-2 text-right font-mono">${formatBDT(it.unitPrice || it.price || 0)}</td>
+                        <td class="py-2 text-right font-mono font-bold">${formatBDT((it.unitPrice || it.price || 0) * (it.quantity || 1) + (it.specialFee || 0))}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+
+                <div class="border-t border-slate-200 pt-3 space-y-1 text-xs">
+                  <div class="flex justify-between text-slate-600"><span>সাবটোটাল:</span><span class="font-mono">${formatBDT(o.subtotal)}</span></div>
+                  <div class="flex justify-between text-slate-600"><span>ডেলিভারি ফি (${o.deliveryZone === 'narayanganj' || o.customerDistrict === 'নারায়ণগঞ্জ' ? 'নারায়ণগঞ্জ' : 'নারায়ণগঞ্জের বাইরে'}):</span><span class="font-mono">${formatBDT(o.deliveryFee)}</span></div>
+                  <div class="flex justify-between text-sm font-bold text-slate-900 border-t pt-2"><span>সর্বমোট প্রদেয়:</span><span class="text-emerald-700 font-mono">${formatBDT(o.totalAmount)}</span></div>
+                </div>
+
+                <div class="text-center pt-3 text-[11px] text-slate-500 border-t border-dashed border-slate-200">
+                  ${state.shopInfo.storeName || 'তাজ কেয়ার্স'} এ কেনাকাটা করার জন্য ধন্যবাদ! প্রয়োজনে হেল্পলাইন: ${state.shopInfo.phone || state.shopInfo.whatsapp || '01712-345678'}
+                </div>
               </div>
             </div>
           </div>
@@ -1965,14 +1979,11 @@
     // -------------------------------------------------------------
     // 11. INITIALIZATION ON PAGE LOAD
     // -------------------------------------------------------------
-    window.addEventListener("DOMContentLoaded", () => {
-      checkExistingSession();
-      renderApp();
-      if (state.isAuthenticated) {
-        initFirestoreListeners();
-      }
-    });
-
+    checkExistingSession();
+    renderApp();
+    if (state.isAuthenticated) {
+      initFirestoreListeners();
+    }
   </script>
 </body>
 </html>
